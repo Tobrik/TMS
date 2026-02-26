@@ -14,7 +14,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, constr, field_validator
 from typing import Optional, List, Dict, Any
 import re
-import sqlite3, hashlib, secrets
+import psycopg2, psycopg2.extras, hashlib, secrets
 try:
     from PIL import Image, ImageFilter
     HAS_PILLOW = True
@@ -171,11 +171,7 @@ disease_recommendations = {
     "Common Cold": "Покой, тёплое питьё, промывание носа, жаропонижающее при необходимости."
 }
 
-# 🔴 ГЛАВНЫЙ ФИКС ДЛЯ VERCEL 🔴
-if os.environ.get("VERCEL") or os.environ.get("VERCEL_REGION"):
-    DB = "/tmp/medical.db"
-else:
-    DB = os.environ.get("DB_PATH", "medical.db")
+DATABASE_URL = os.environ.get("DATABASE_URL", "")
 
 symptom_list =[
     'ABDOMINAL_PAIN','CHEST_PAIN','COUGH','DEHYDRATION','DIARRHEA','FEVER','HEADACHE','ITCHING',
@@ -225,69 +221,61 @@ def verify_password(pwd: str, stored: str) -> bool:
 # ─── Database ───
 
 def connect():
-    conn = sqlite3.connect(DB)
-    conn.execute("PRAGMA foreign_keys = ON;")
+    conn = psycopg2.connect(DATABASE_URL)
+    conn.autocommit = False
     return conn
 
 def create_tables():
-    with connect() as conn:
+    conn = connect()
+    try:
         cur = conn.cursor()
-        cur.executescript("""
-        PRAGMA foreign_keys = ON;
-
+        cur.execute("""
         CREATE TABLE IF NOT EXISTS doctors (
-            doctor_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            doctor_id SERIAL PRIMARY KEY,
             full_name TEXT NOT NULL,
             specialty TEXT NOT NULL,
             password_hash TEXT NOT NULL,
-            created_at TEXT DEFAULT (datetime('now'))
+            created_at TIMESTAMP DEFAULT NOW()
         );
 
         CREATE TABLE IF NOT EXISTS patients (
-            patient_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            patient_id SERIAL PRIMARY KEY,
             full_name TEXT NOT NULL,
             city TEXT,
             password_hash TEXT NOT NULL,
-            created_at TEXT DEFAULT (datetime('now'))
+            created_at TIMESTAMP DEFAULT NOW()
         );
 
         CREATE TABLE IF NOT EXISTS diary_days (
-            day_id INTEGER PRIMARY KEY AUTOINCREMENT,
-            patient_id INTEGER NOT NULL,
-            doctor_id INTEGER,
-            created_at TEXT DEFAULT (datetime('now')),
-
+            day_id SERIAL PRIMARY KEY,
+            patient_id INTEGER NOT NULL REFERENCES patients(patient_id) ON DELETE CASCADE,
+            doctor_id INTEGER REFERENCES doctors(doctor_id) ON DELETE SET NULL,
+            created_at TIMESTAMP DEFAULT NOW(),
             disease_predict TEXT,
             score REAL,
             disease_setup TEXT,
             recept TEXT,
             patient_explanation TEXT,
-            doctor_explanation TEXT,
-
-            FOREIGN KEY(patient_id) REFERENCES patients(patient_id) ON DELETE CASCADE,
-            FOREIGN KEY(doctor_id) REFERENCES doctors(doctor_id) ON DELETE SET NULL
+            doctor_explanation TEXT
         );
 
         CREATE TABLE IF NOT EXISTS diary_symptoms (
-            day_id INTEGER NOT NULL,
+            day_id INTEGER NOT NULL REFERENCES diary_days(day_id) ON DELETE CASCADE,
             symptom_code TEXT NOT NULL,
             value INTEGER NOT NULL DEFAULT 0,
-            PRIMARY KEY(day_id, symptom_code),
-            FOREIGN KEY(day_id) REFERENCES diary_days(day_id) ON DELETE CASCADE
+            PRIMARY KEY(day_id, symptom_code)
         );
 
         CREATE TABLE IF NOT EXISTS lab_results (
-            result_id INTEGER PRIMARY KEY AUTOINCREMENT,
-            patient_id INTEGER NOT NULL,
-            day_id INTEGER,
-            created_at TEXT DEFAULT (datetime('now')),
+            result_id SERIAL PRIMARY KEY,
+            patient_id INTEGER NOT NULL REFERENCES patients(patient_id) ON DELETE CASCADE,
+            day_id INTEGER REFERENCES diary_days(day_id) ON DELETE SET NULL,
+            created_at TIMESTAMP DEFAULT NOW(),
             test_type TEXT,
             test_date TEXT,
             results_json TEXT,
             interpretation TEXT,
-            image_filename TEXT,
-            FOREIGN KEY(patient_id) REFERENCES patients(patient_id) ON DELETE CASCADE,
-            FOREIGN KEY(day_id) REFERENCES diary_days(day_id) ON DELETE SET NULL
+            image_filename TEXT
         );
 
         CREATE INDEX IF NOT EXISTS idx_days_patient ON diary_days(patient_id, day_id);
@@ -296,29 +284,24 @@ def create_tables():
         CREATE INDEX IF NOT EXISTS idx_lab_patient  ON lab_results(patient_id);
         """)
         conn.commit()
-
-        cur.execute("PRAGMA table_info(diary_days)")
-        cols = {row[1] for row in cur.fetchall()}
-        if "patient_explanation" not in cols:
-            cur.execute("ALTER TABLE diary_days ADD COLUMN patient_explanation TEXT")
-        if "doctor_explanation" not in cols:
-            cur.execute("ALTER TABLE diary_days ADD COLUMN doctor_explanation TEXT")
-        conn.commit()
+    finally:
+        conn.close()
 
 def seed_doctors():
-    with connect() as conn:
+    conn = connect()
+    try:
         cur = conn.cursor()
         cur.execute("SELECT COUNT(*) FROM doctors")
         if cur.fetchone()[0] > 0:
+            conn.close()
             return
 
-    seeds_raw = os.environ.get("DOCTOR_SEEDS", "")
-    if not seeds_raw:
-        logger.warning("DOCTOR_SEEDS env variable not set — no doctors seeded")
-        return
+        seeds_raw = os.environ.get("DOCTOR_SEEDS", "")
+        if not seeds_raw:
+            logger.warning("DOCTOR_SEEDS env variable not set — no doctors seeded")
+            conn.close()
+            return
 
-    with connect() as conn:
-        cur = conn.cursor()
         for entry in seeds_raw.split(";"):
             entry = entry.strip()
             if not entry:
@@ -330,68 +313,89 @@ def seed_doctors():
             full_name, spec, pwd = parts[0].strip(), parts[1].strip(), parts[2].strip()
             cur.execute("""
                 INSERT INTO doctors(full_name, specialty, password_hash)
-                VALUES (?,?,?)
+                VALUES (%s,%s,%s)
             """, (encrypt_field(full_name), encrypt_field(spec), hash_password(pwd)))
         conn.commit()
         logger.info("Doctors seeded successfully")
+    finally:
+        conn.close()
 
 # ─── Service Functions ───
 
 def register_as_patient(full_name: str, city: str, password_5: str) -> int:
-    with connect() as conn:
+    conn = connect()
+    try:
         cur = conn.cursor()
         cur.execute("""
             INSERT INTO patients(full_name, city, password_hash)
-            VALUES (?,?,?)
+            VALUES (%s,%s,%s) RETURNING patient_id
         """, (encrypt_field(full_name), encrypt_field(city), hash_password(password_5)))
+        patient_id = cur.fetchone()[0]
         conn.commit()
-        return cur.lastrowid
+        return patient_id
+    finally:
+        conn.close()
 
 def log_in_patient(patient_id: int, password_5: str) -> bool:
-    with connect() as conn:
+    conn = connect()
+    try:
         cur = conn.cursor()
-        cur.execute("SELECT password_hash FROM patients WHERE patient_id = ?", (patient_id,))
+        cur.execute("SELECT password_hash FROM patients WHERE patient_id = %s", (patient_id,))
         row = cur.fetchone()
         if not row:
             return False
         return verify_password(password_5, row[0])
+    finally:
+        conn.close()
 
 def log_in_doctor(doctor_id: int, password_5: str) -> bool:
-    with connect() as conn:
+    conn = connect()
+    try:
         cur = conn.cursor()
-        cur.execute("SELECT password_hash FROM doctors WHERE doctor_id = ?", (doctor_id,))
+        cur.execute("SELECT password_hash FROM doctors WHERE doctor_id = %s", (doctor_id,))
         row = cur.fetchone()
         if not row:
             return False
         return verify_password(password_5, row[0])
+    finally:
+        conn.close()
 
 def get_doctor_info(doctor_id: int) -> Optional[Dict[str, Any]]:
-    with connect() as conn:
+    conn = connect()
+    try:
         cur = conn.cursor()
-        cur.execute("SELECT doctor_id, full_name, specialty, created_at FROM doctors WHERE doctor_id = ?", (doctor_id,))
+        cur.execute("SELECT doctor_id, full_name, specialty, created_at FROM doctors WHERE doctor_id = %s", (doctor_id,))
         row = cur.fetchone()
         if not row:
             return None
-        return {"doctor_id": row[0], "full_name": decrypt_field(row[1]), "specialty": decrypt_field(row[2]), "created_at": row[3]}
+        return {"doctor_id": row[0], "full_name": decrypt_field(row[1]), "specialty": decrypt_field(row[2]), "created_at": str(row[3])}
+    finally:
+        conn.close()
 
 def select_patient(patient_id: int) -> Optional[Dict[str, Any]]:
-    with connect() as conn:
+    conn = connect()
+    try:
         cur = conn.cursor()
         cur.execute("""
             SELECT patient_id, full_name, city, created_at
             FROM patients
-            WHERE patient_id = ?
+            WHERE patient_id = %s
         """, (patient_id,))
         row = cur.fetchone()
         if not row:
             return None
-        return {"patient_id": row[0], "full_name": decrypt_field(row[1]), "city": decrypt_field(row[2]), "created_at": row[3]}
+        return {"patient_id": row[0], "full_name": decrypt_field(row[1]), "city": decrypt_field(row[2]), "created_at": str(row[3])}
+    finally:
+        conn.close()
 
 def last_day(patient_id: int) -> Optional[int]:
-    with connect() as conn:
+    conn = connect()
+    try:
         cur = conn.cursor()
-        cur.execute("SELECT MAX(day_id) FROM diary_days WHERE patient_id = ?", (patient_id,))
+        cur.execute("SELECT MAX(day_id) FROM diary_days WHERE patient_id = %s", (patient_id,))
         return cur.fetchone()[0]
+    finally:
+        conn.close()
 
 def insert_disease(
     patient_id: int,
@@ -414,7 +418,8 @@ def insert_disease(
             "Консультация врача обязательна."
         )
 
-    with connect() as conn:
+    conn = connect()
+    try:
         cur = conn.cursor()
 
         cur.execute("""
@@ -428,7 +433,7 @@ def insert_disease(
                 patient_explanation,
                 doctor_explanation
             )
-            VALUES (?,?,?,?,?,?,?,?)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s) RETURNING day_id
         """, (
             patient_id,
             doctor_id,
@@ -440,7 +445,7 @@ def insert_disease(
             encrypt_field(doctor_explanation),
         ))
 
-        day_id = cur.lastrowid
+        day_id = cur.fetchone()[0]
 
         rows = [
             (day_id, symptom_list[i], int(symptoms_23[i]))
@@ -449,17 +454,22 @@ def insert_disease(
 
         cur.executemany("""
             INSERT INTO diary_symptoms(day_id, symptom_code, value)
-            VALUES (?,?,?)
+            VALUES (%s,%s,%s)
         """, rows)
 
         conn.commit()
         return day_id
+    finally:
+        conn.close()
 
 def update_recept(day_id: int, recept_text: str) -> None:
-    with connect() as conn:
+    conn = connect()
+    try:
         cur = conn.cursor()
-        cur.execute("UPDATE diary_days SET recept = ? WHERE day_id = ?", (encrypt_field(recept_text), day_id))
+        cur.execute("UPDATE diary_days SET recept = %s WHERE day_id = %s", (encrypt_field(recept_text), day_id))
         conn.commit()
+    finally:
+        conn.close()
 
 def update_recept_last_day(patient_id: int, recept_text: str) -> bool:
     d = last_day(patient_id)
@@ -469,7 +479,8 @@ def update_recept_last_day(patient_id: int, recept_text: str) -> bool:
     return True
 
 def list_doctors_db() -> List[Dict[str, Any]]:
-    with connect() as conn:
+    conn = connect()
+    try:
         cur = conn.cursor()
         cur.execute("""
             SELECT doctor_id, full_name, specialty, created_at
@@ -478,9 +489,11 @@ def list_doctors_db() -> List[Dict[str, Any]]:
         """)
         rows = cur.fetchall()
         return [
-            {"doctor_id": r[0], "full_name": decrypt_field(r[1]), "specialty": decrypt_field(r[2]), "created_at": r[3]}
+            {"doctor_id": r[0], "full_name": decrypt_field(r[1]), "specialty": decrypt_field(r[2]), "created_at": str(r[3])}
             for r in rows
         ]
+    finally:
+        conn.close()
 
 def doctor_update_day(
     patient_id: int,
@@ -494,38 +507,42 @@ def doctor_update_day(
         return False
 
     set_parts = []
-    params =[]
+    params = []
 
     if new_recept is not None:
-        set_parts.append("recept = ?")
+        set_parts.append("recept = %s")
         params.append(encrypt_field(new_recept))
 
     if new_disease_setup is not None:
-        set_parts.append("disease_setup = ?")
+        set_parts.append("disease_setup = %s")
         params.append(encrypt_field(new_disease_setup))
 
     if new_doctor_id is not None:
-        set_parts.append("doctor_id = ?")
+        set_parts.append("doctor_id = %s")
         params.append(int(new_doctor_id))
 
     set_sql = ", ".join(set_parts)
 
-    with connect() as conn:
+    conn = connect()
+    try:
         cur = conn.cursor()
         cur.execute(f"""
             UPDATE diary_days
             SET {set_sql}
-            WHERE day_id = ? AND patient_id = ?
+            WHERE day_id = %s AND patient_id = %s
         """, (*params, int(day_id), int(patient_id)))
 
         conn.commit()
         return cur.rowcount > 0
+    finally:
+        conn.close()
 
 def get_patient_history(patient_id: int, limit: int = 30) -> List[Dict[str, Any]]:
     if limit <= 0:
         limit = 30
 
-    with connect() as conn:
+    conn = connect()
+    try:
         cur = conn.cursor()
         cur.execute("""
             SELECT
@@ -541,15 +558,15 @@ def get_patient_history(patient_id: int, limit: int = 30) -> List[Dict[str, Any]
                 d.doctor_explanation
             FROM diary_days d
             LEFT JOIN doctors doc ON doc.doctor_id = d.doctor_id
-            WHERE d.patient_id = ?
+            WHERE d.patient_id = %s
             ORDER BY d.day_id DESC
-            LIMIT ?
+            LIMIT %s
         """, (patient_id, limit))
         rows = cur.fetchall()
 
         return [{
             "day_id": r[0],
-            "created_at": r[1],
+            "created_at": str(r[1]),
             "disease_predict": decrypt_field(r[2]),
             "score": r[3],
             "disease_setup": decrypt_field(r[4]),
@@ -559,23 +576,28 @@ def get_patient_history(patient_id: int, limit: int = 30) -> List[Dict[str, Any]
             "patient_explanation": decrypt_field(r[8]),
             "doctor_explanation": decrypt_field(r[9]),
         } for r in rows]
+    finally:
+        conn.close()
 
 def get_symptom_graph(patient_id: int, symptom_code: str) -> List[Dict[str, Any]]:
     if symptom_code not in symptom_list:
         raise ValueError("Неверный symptom_code (нет в symptom_list)")
 
-    with connect() as conn:
+    conn = connect()
+    try:
         cur = conn.cursor()
         cur.execute("""
             SELECT d.day_id, d.created_at, s.value
             FROM diary_days d
             JOIN diary_symptoms s ON s.day_id = d.day_id
-            WHERE d.patient_id = ? AND s.symptom_code = ?
+            WHERE d.patient_id = %s AND s.symptom_code = %s
             ORDER BY d.day_id
         """, (patient_id, symptom_code))
         rows = cur.fetchall()
 
-        return [{"day_id": r[0], "created_at": r[1], "value": r[2]} for r in rows]
+        return [{"day_id": r[0], "created_at": str(r[1]), "value": r[2]} for r in rows]
+    finally:
+        conn.close()
 
 def model_predict(symptoms):
     score_dict = dict()
@@ -611,7 +633,8 @@ def classify_zone(disease: str, score: float) -> str:
     return "green"
 
 def get_all_patients_triage() -> list:
-    with connect() as conn:
+    conn = connect()
+    try:
         cur = conn.cursor()
         cur.execute("""
             SELECT p.patient_id, p.full_name, p.city, p.created_at,
@@ -623,7 +646,7 @@ def get_all_patients_triage() -> list:
             ORDER BY p.patient_id
         """)
         rows = cur.fetchall()
-        result =[]
+        result = []
         for r in rows:
             disease = decrypt_field(r[4]) or ""
             score = r[5] or 0.0
@@ -633,19 +656,24 @@ def get_all_patients_triage() -> list:
                 "patient_id": r[0],
                 "full_name": decrypt_field(r[1]),
                 "city": decrypt_field(r[2]),
-                "created_at": r[3],
+                "created_at": str(r[3]),
                 "last_disease": disease,
                 "last_score": score,
-                "diag_date": r[6],
+                "diag_date": str(r[6]) if r[6] else None,
                 "zone": zone,
             })
         return result
+    finally:
+        conn.close()
 
 def day_belongs_to_patient(day_id: int, patient_id: int) -> bool:
-    with connect() as conn:
+    conn = connect()
+    try:
         cur = conn.cursor()
-        cur.execute("SELECT 1 FROM diary_days WHERE day_id = ? AND patient_id = ?", (day_id, patient_id))
+        cur.execute("SELECT 1 FROM diary_days WHERE day_id = %s AND patient_id = %s", (day_id, patient_id))
         return cur.fetchone() is not None
+    finally:
+        conn.close()
 
 # ─── Startup ───
 
@@ -684,8 +712,12 @@ app.add_middleware(
 @app.get("/health")
 async def health():
     try:
-        with connect() as conn:
-            conn.execute("SELECT 1")
+        conn = connect()
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT 1")
+        finally:
+            conn.close()
         return {"status": "healthy", "version": "1.0.0"}
     except Exception:
         return JSONResponse(status_code=503, content={"status": "unhealthy"})
@@ -777,15 +809,18 @@ async def save_explanation_endpoint(body: SaveExplanationRequest, user: dict = D
     patient_id = user.get("patient_id")
     if not day_belongs_to_patient(body.day_id, patient_id):
         raise HTTPException(status_code=403, detail="Access denied")
-    with connect() as conn:
+    conn = connect()
+    try:
         cur = conn.cursor()
         cur.execute("""
             UPDATE diary_days
-            SET patient_explanation = ?, doctor_explanation = ?
-            WHERE day_id = ?
+            SET patient_explanation = %s, doctor_explanation = %s
+            WHERE day_id = %s
         """, (encrypt_field(body.patient_explanation), encrypt_field(body.doctor_explanation), body.day_id))
         conn.commit()
         return {"ok": cur.rowcount > 0}
+    finally:
+        conn.close()
 
 # ─── Doctor-only endpoints ───
 
@@ -821,16 +856,19 @@ async def get_day_symptoms_endpoint(body: DaySymptomsRequest, user: dict = Depen
     if user.get("role") == "patient":
         if not day_belongs_to_patient(body.day_id, user["patient_id"]):
             raise HTTPException(status_code=403, detail="Access denied")
-    with connect() as conn:
+    conn = connect()
+    try:
         cur = conn.cursor()
         cur.execute("""
             SELECT symptom_code, value
             FROM diary_symptoms
-            WHERE day_id = ?
+            WHERE day_id = %s
             ORDER BY symptom_code
         """, (body.day_id,))
         rows = cur.fetchall()
         symptoms = {r[0]: r[1] for r in rows}
+    finally:
+        conn.close()
     return {"symptoms": symptoms}
 
 # ─── Lab Results endpoints ───
@@ -929,14 +967,17 @@ async def upload_lab_result_endpoint(
     interpretation = parsed.get("interpretation", "")
     results = parsed.get("results",[])
 
-    with connect() as conn:
+    conn = connect()
+    try:
         cur = conn.cursor()
         cur.execute("""
             INSERT INTO lab_results(patient_id, test_type, test_date, results_json, interpretation, image_filename)
-            VALUES (?, ?, ?, ?, ?, ?)
+            VALUES (%s, %s, %s, %s, %s, %s) RETURNING result_id
         """, (patient_id, test_type, test_date, encrypt_field(json.dumps(results, ensure_ascii=False)), encrypt_field(interpretation), safe_filename))
+        result_id = cur.fetchone()[0]
         conn.commit()
-        result_id = cur.lastrowid
+    finally:
+        conn.close()
 
     return {
         "result_id": result_id,
@@ -956,18 +997,21 @@ async def get_lab_results_endpoint(body: GetLabResultsRequest = None, user: dict
             raise HTTPException(status_code=400, detail="patient_id required for doctors")
         patient_id = body.patient_id
 
-    with connect() as conn:
+    conn = connect()
+    try:
         cur = conn.cursor()
         cur.execute("""
             SELECT result_id, test_type, test_date, results_json, interpretation, created_at
             FROM lab_results
-            WHERE patient_id = ?
+            WHERE patient_id = %s
             ORDER BY result_id DESC
             LIMIT 50
         """, (patient_id,))
         rows = cur.fetchall()
+    finally:
+        conn.close()
 
-    results =[]
+    results = []
     for r in rows:
         decrypted_json = decrypt_field(r[3])
         try:
