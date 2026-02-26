@@ -62,11 +62,14 @@ export function predict(symptomsVector: number[], labContext?: LabContext): Diag
         (code) => getSeverity(symptomsVector, code) >= keySym.minSeverity
       );
       score += hasKey ? KEY_BONUS : KEY_PENALTY;
+      maxScore += KEY_BONUS;
     }
 
     // ─── Lab Context Adjustment ─────────────────────────
     if (labContext?.adjustments[disease] !== undefined) {
-      score += labContext.adjustments[disease];
+      const adj = labContext.adjustments[disease];
+      score += adj;
+      if (adj > 0) maxScore += adj;
     }
 
     score = Math.max(score, 0);
@@ -82,13 +85,12 @@ export function predict(symptomsVector: number[], labContext?: LabContext): Diag
   // ─── Build Result ──────────────────────────────────────────
   const top3 = scores.slice(0, 3);
 
-  // Нормализуем для отображения (% от суммы top 3)
-  const totalTop3 = top3.reduce((s, d) => s + d.score, 0);
-
+  // Абсолютные проценты — не нормализуем к 100%,
+  // чтобы пользователь видел реальную уверенность модели
   const slices: DiseaseSlice[] = top3.map((s) => ({
     name: s.name,
     label: DISEASE_LABELS[s.name] || s.name,
-    score: totalTop3 > 0 ? s.score / totalTop3 : 0,
+    score: s.score,
   }));
 
   const top1 = top3[0];
