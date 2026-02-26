@@ -1,19 +1,11 @@
 {
-  "builds": [
-    {
-      "src": "frontend/package.json",
-      "use": "@vercel/next"
-    },
-    {
-      "src": "api/index.py",
-      "use": "@vercel/python@4.5.0",
-      "config": {
-        "maxLambdaSize": "50mb",
-        "maxDuration": 60
-      }
+  "functions": {
+    "api/index.py": {
+      "runtime": "@vercel/python@4.5.0",
+      "maxDuration": 60
     }
-  ],
-  "routes": [
-    { "src": "/api/(.*)", "dest": "/api/index.py" }
+  },
+  "rewrites": [
+    { "source": "/api/:path*", "destination": "/api/index.py" }
   ]
 }
