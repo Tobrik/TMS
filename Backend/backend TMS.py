@@ -15,7 +15,11 @@ from pydantic import BaseModel, Field, constr, field_validator
 from typing import Optional, List, Dict, Any
 import re
 import sqlite3, hashlib, secrets
-from PIL import Image, ImageFilter
+try:
+    from PIL import Image, ImageFilter
+    HAS_PILLOW = True
+except ImportError:
+    HAS_PILLOW = False
 
 from auth import (
     create_access_token,
@@ -168,7 +172,7 @@ disease_recommendations = {
     "Common Cold": "Покой, тёплое питьё, промывание носа, жаропонижающее при необходимости."
 }
 
-DB = os.environ.get("DB_PATH", "medical.db")
+DB = os.environ.get("DB_PATH", "/tmp/medical.db" if os.environ.get("VERCEL") else "medical.db")
 
 symptom_list = [
     'ABDOMINAL_PAIN','CHEST_PAIN','COUGH','DEHYDRATION','DIARRHEA','FEVER','HEADACHE','ITCHING',
@@ -181,6 +185,9 @@ symptom_list = [
 
 def blur_pii_region(image_bytes: bytes, top_fraction: float = 0.18) -> bytes:
     """Blur the top portion of a medical document image where PII (name, address, etc.) is typically located."""
+    if not HAS_PILLOW:
+        logger.warning("Pillow not installed — skipping PII blur")
+        return image_bytes
     img = Image.open(io.BytesIO(image_bytes))
     w, h = img.size
     crop_h = int(h * top_fraction)
