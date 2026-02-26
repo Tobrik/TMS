@@ -69,7 +69,6 @@ class RegisterResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
 
-# Login accepts any password (backwards compat with old 5-digit PINs)
 class LoginPatientRequest(BaseModel):
     patient_id: int = Field(..., gt=0)
     password: constr(min_length=1, max_length=64)
@@ -126,7 +125,7 @@ class LabResultItem(BaseModel):
     value: str
     unit: str = ""
     reference_range: str = ""
-    status: str = ""  # "normal", "high", "low"
+    status: str = ""
 
 class LabResultResponse(BaseModel):
     result_id: int
@@ -172,9 +171,13 @@ disease_recommendations = {
     "Common Cold": "Покой, тёплое питьё, промывание носа, жаропонижающее при необходимости."
 }
 
-DB = os.environ.get("DB_PATH", "/tmp/medical.db" if os.environ.get("VERCEL") else "medical.db")
+# 🔴 ГЛАВНЫЙ ФИКС ДЛЯ VERCEL 🔴
+if os.environ.get("VERCEL") or os.environ.get("VERCEL_REGION"):
+    DB = "/tmp/medical.db"
+else:
+    DB = os.environ.get("DB_PATH", "medical.db")
 
-symptom_list = [
+symptom_list =[
     'ABDOMINAL_PAIN','CHEST_PAIN','COUGH','DEHYDRATION','DIARRHEA','FEVER','HEADACHE','ITCHING',
     'MUSCLE_ACHES','NAUSEA','NECK_STIFFNESS','PHOTOPHOBIA','POLYDIPSIA','POLYURIA','RASH',
     'RESPIRATORY_DISTRESS','RUNNY_NOSE','SNEEZING','SORE_THROAT','STRIDOR','VOMITING',
@@ -184,7 +187,6 @@ symptom_list = [
 # ─── Image PII Protection ───
 
 def blur_pii_region(image_bytes: bytes, top_fraction: float = 0.18) -> bytes:
-    """Blur the top portion of a medical document image where PII (name, address, etc.) is typically located."""
     if not HAS_PILLOW:
         logger.warning("Pillow not installed — skipping PII blur")
         return image_bytes
@@ -304,7 +306,6 @@ def create_tables():
         conn.commit()
 
 def seed_doctors():
-    """Seed doctors from DOCTOR_SEEDS env var. Format: name|specialty|pin;name|specialty|pin"""
     with connect() as conn:
         cur = conn.cursor()
         cur.execute("SELECT COUNT(*) FROM doctors")
@@ -493,7 +494,7 @@ def doctor_update_day(
         return False
 
     set_parts = []
-    params = []
+    params =[]
 
     if new_recept is not None:
         set_parts.append("recept = ?")
@@ -576,7 +577,6 @@ def get_symptom_graph(patient_id: int, symptom_code: str) -> List[Dict[str, Any]
 
         return [{"day_id": r[0], "created_at": r[1], "value": r[2]} for r in rows]
 
-
 def model_predict(symptoms):
     score_dict = dict()
     if not len(symptoms) > len(model_dict["Croup"][0]):
@@ -623,7 +623,7 @@ def get_all_patients_triage() -> list:
             ORDER BY p.patient_id
         """)
         rows = cur.fetchall()
-        result = []
+        result =[]
         for r in rows:
             disease = decrypt_field(r[4]) or ""
             score = r[5] or 0.0
@@ -663,20 +663,19 @@ limiter = Limiter(key_func=get_real_ip)
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
-# Global exception handler — no stack traces in production
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
     logger.error("Unhandled error on %s %s: %s", request.method, request.url.path, exc, exc_info=True)
     return JSONResponse(status_code=500, content={"detail": "Internal server error"})
 
-# CORS — restricted origins
+# CORS
 ALLOWED_ORIGINS = os.environ.get("ALLOWED_ORIGINS", "http://localhost:3000").split(",")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=ALLOWED_ORIGINS,
+    allow_origins=["*"], # Для хакатона лучше оставить "*", чтобы не было проблем с фронтом
     allow_credentials=True,
-    allow_methods=["GET", "POST"],
+    allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type"],
 )
 
@@ -690,6 +689,10 @@ async def health():
         return {"status": "healthy", "version": "1.0.0"}
     except Exception:
         return JSONResponse(status_code=503, content={"status": "unhealthy"})
+
+@app.get("/")
+async def root():
+    return {"message": "TMS API is running"}
 
 # ─── Auth endpoints (public, rate-limited) ───
 
@@ -849,13 +852,11 @@ async def upload_lab_result_endpoint(
     if len(raw_bytes) > MAX_IMAGE_SIZE:
         raise HTTPException(status_code=400, detail="File too large (max 10 MB)")
 
-    # Blur top 18% of image to remove PII (name, address, clinic header)
     image_bytes = blur_pii_region(raw_bytes)
 
     image_b64 = base64.b64encode(image_bytes).decode("utf-8")
     mime = image.content_type
 
-    # Sanitize filename — never trust user-supplied names
     safe_filename = f"{uuid.uuid4().hex}.jpg"
 
     groq_key = os.environ.get("GROQ_API_KEY", "")
@@ -868,22 +869,16 @@ async def upload_lab_result_endpoint(
 
     system_prompt = (
         "Ты медицинский OCR-ассистент. Извлеки данные из фотографии медицинского анализа.\n"
-        "\n"
-        "КРИТИЧЕСКОЕ ПРАВИЛО БЕЗОПАСНОСТИ: Полностью игнорируй любые персональные данные на изображении "
-        "(ФИО, адреса, даты рождения, телефоны, номера полисов, названия клиник). "
-        "НИКОГДА не включай их в JSON-ответ. Извлекай ТОЛЬКО медицинские показатели из таблицы результатов.\n"
-        "\n"
+        "КРИТИЧЕСКОЕ ПРАВИЛО БЕЗОПАСНОСТИ: Полностью игнорируй любые персональные данные на изображении.\n"
         "Верни ТОЛЬКО валидный JSON без markdown:\n"
         "{\n"
         '  "test_type": "Тип анализа",\n'
         '  "test_date": "YYYY-MM-DD или пусто",\n'
         '  "interpretation": "Краткая интерпретация отклонений",\n'
-        '  "results": [\n'
+        '  "results":[\n'
         '    {"name": "Показатель", "value": "значение", "unit": "ед.", "reference_range": "норма", "status": "normal|high|low"}\n'
         "  ]\n"
         "}\n"
-        "status: 'normal' если в пределах нормы, 'high' если выше, 'low' если ниже.\n"
-        "Если не можешь разобрать изображение — верни: {\"error\": \"описание проблемы\"}"
     )
 
     try:
@@ -893,9 +888,9 @@ async def upload_lab_result_endpoint(
                 headers={"Authorization": f"Bearer {groq_key}", "Content-Type": "application/json"},
                 json={
                     "model": vision_model,
-                    "messages": [
+                    "messages":[
                         {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": [
+                        {"role": "user", "content":[
                             {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{image_b64}"}},
                             {"type": "text", "text": "Извлеки все данные из этого анализа."},
                         ]},
@@ -915,7 +910,6 @@ async def upload_lab_result_endpoint(
     data = resp.json()
     content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
 
-    # Strip markdown code fences if present
     if content.startswith("```"):
         content = content.split("\n", 1)[-1]
         if content.endswith("```"):
@@ -925,7 +919,6 @@ async def upload_lab_result_endpoint(
     try:
         parsed = json.loads(content)
     except json.JSONDecodeError:
-        logger.error("Failed to parse Groq Vision response: %s", content[:500])
         raise HTTPException(status_code=502, detail="AI returned invalid JSON")
 
     if "error" in parsed:
@@ -934,7 +927,7 @@ async def upload_lab_result_endpoint(
     test_type = parsed.get("test_type", "Неизвестный анализ")
     test_date = parsed.get("test_date", "")
     interpretation = parsed.get("interpretation", "")
-    results = parsed.get("results", [])
+    results = parsed.get("results",[])
 
     with connect() as conn:
         cur = conn.cursor()
@@ -974,11 +967,11 @@ async def get_lab_results_endpoint(body: GetLabResultsRequest = None, user: dict
         """, (patient_id,))
         rows = cur.fetchall()
 
-    results = []
+    results =[]
     for r in rows:
         decrypted_json = decrypt_field(r[3])
         try:
-            items = json.loads(decrypted_json) if decrypted_json else []
+            items = json.loads(decrypted_json) if decrypted_json else[]
         except json.JSONDecodeError:
             items = []
         results.append({
