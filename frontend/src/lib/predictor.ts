@@ -7,18 +7,19 @@ import {
 import { SYMPTOM_LIST } from "./symptoms";
 import type { DiseaseSlice, DiagnosisResult, LabContext } from "./types";
 
-// ─── Key Symptom Bonus/Penalty ────────────────────────────────────
-// Только для болезней с ярко выраженным ключевым симптомом.
-// Есть → +10, нет → -10.
+// ─── Key Symptom Multiplier ───────────────────────────────────────
+// Мультипликативный коэффициент вместо аддитивного бонуса.
+// Ключевой симптом есть → score * boost, нет → score * dampen.
+// Не ломает maxScore, не раздувает проценты.
 const KEY_SYMPTOMS: Record<string, { codes: string[]; minSeverity: number }> = {
-  "Appendicitis":  { codes: ["ABDOMINAL_PAIN"], minSeverity: 2 }, // острая боль в районе аппендикса
-  "Chickenpox":    { codes: ["RASH"],            minSeverity: 2 }, // красная выраженная сыпь
-  "Scarlet Fever": { codes: ["RASH"],            minSeverity: 2 }, // красная выраженная сыпь
-  "Croup":         { codes: ["STRIDOR"],         minSeverity: 1 }, // ребёнок + стридор
+  "Appendicitis":  { codes: ["ABDOMINAL_PAIN"], minSeverity: 2 },
+  "Chickenpox":    { codes: ["RASH"],            minSeverity: 2 },
+  "Scarlet Fever": { codes: ["RASH"],            minSeverity: 2 },
+  "Croup":         { codes: ["STRIDOR"],         minSeverity: 1 },
 };
 
-const KEY_BONUS = 10;
-const KEY_PENALTY = -10;
+const KEY_BOOST  = 1.3;  // +30% если ключевой симптом есть
+const KEY_DAMPEN = 0.6;  // -40% если ключевого симптома нет
 
 // ─── Helper: severity по коду симптома ────────────────────────────
 function getSeverity(vector: number[], code: string): number {
@@ -55,14 +56,13 @@ export function predict(symptomsVector: number[], labContext?: LabContext): Diag
     // Пропускаем болезнь если ни один симптом не совпал
     if (matchCount === 0 || maxScore === 0) continue;
 
-    // ─── Key Symptom Bonus/Penalty ─────────────────────────
+    // ─── Key Symptom Multiplier ─────────────────────────
     const keySym = KEY_SYMPTOMS[disease];
     if (keySym) {
       const hasKey = keySym.codes.some(
         (code) => getSeverity(symptomsVector, code) >= keySym.minSeverity
       );
-      score += hasKey ? KEY_BONUS : KEY_PENALTY;
-      maxScore += KEY_BONUS;
+      score *= hasKey ? KEY_BOOST : KEY_DAMPEN;
     }
 
     // ─── Lab Context Adjustment ─────────────────────────
@@ -74,7 +74,7 @@ export function predict(symptomsVector: number[], labContext?: LabContext): Diag
 
     score = Math.max(score, 0);
     // Процент от максимально возможного score болезни
-    const pct = score / maxScore;
+    const pct = Math.min(score / maxScore, 1);
     scores.push({ name: disease, score: pct });
   }
 
