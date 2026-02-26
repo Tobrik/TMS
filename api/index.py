@@ -15,7 +15,11 @@ from pydantic import BaseModel, Field, constr, field_validator
 from typing import Optional, List, Dict, Any
 import re
 import sqlite3, hashlib, secrets
-from PIL import Image, ImageFilter
+try:
+    from PIL import Image, ImageFilter
+    HAS_PILLOW = True
+except ImportError:
+    HAS_PILLOW = False
 import httpx
 
 from auth import (
@@ -182,6 +186,9 @@ symptom_list = [
 
 def blur_pii_region(image_bytes: bytes, top_fraction: float = 0.18) -> bytes:
     """Blur the top portion of a medical document image where PII (name, address, etc.) is typically located."""
+    if not HAS_PILLOW:
+        logger.warning("Pillow not installed — skipping PII blur (OCR prompt still blocks PII extraction)")
+        return image_bytes
     img = Image.open(io.BytesIO(image_bytes))
     w, h = img.size
     crop_h = int(h * top_fraction)
