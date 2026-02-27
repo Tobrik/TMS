@@ -243,6 +243,7 @@ export default function ChatPage() {
         diagnosis.diseaseLabel,
         topDiseases,
         undefined,
+        lang,
       );
 
       diagnosis.patientExplanation = patientExplanation;

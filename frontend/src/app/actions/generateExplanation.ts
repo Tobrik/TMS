@@ -3,28 +3,94 @@
 const GROQ_API_KEY = process.env.GROQ_API_KEY || "";
 const GROQ_MODEL = process.env.GROQ_MODEL || "llama-3.3-70b-versatile";
 
-/**
- * Генерирует краткое объяснение для пациента — почему система поставила этот диагноз.
- */
-const PATIENT_EXPLANATION_PROMPT = `
+type Lang = "ru" | "en" | "kk";
+
+const LANG_NAMES: Record<Lang, string> = {
+  ru: "Russian",
+  en: "English",
+  kk: "Kazakh",
+};
+
+function getPatientPrompt(lang: Lang): string {
+  const langName = LANG_NAMES[lang];
+  return `
 You are a medical AI assistant. The patient described symptoms, the ML system made a preliminary diagnosis.
-Your job: write a SHORT explanation in Russian for the PATIENT — why this diagnosis was suggested.
+Your job: write a SHORT explanation in ${langName} for the PATIENT — why this diagnosis was suggested.
 
 RULES:
-1. Write 2-4 sentences in Russian, simple language (patient-friendly)
+1. Write 2-4 sentences in ${langName}, simple language (patient-friendly)
 2. Explain which symptoms led to this diagnosis
 3. Do NOT scare the patient, be calm and professional
 4. Mention that this is a preliminary assessment and a doctor's consultation is needed
-5. Do NOT output JSON, just plain Russian text
-
-Example output:
-"На основании ваших симптомов — боль в животе (сильная) и рвота — система предположила возможный аппендицит. Эти симптомы характерны для острого воспаления аппендикса, особенно при выраженной боли. Рекомендуем обратиться к хирургу для подтверждения диагноза."
+5. Do NOT output JSON, just plain ${langName} text
+6. You MUST write ENTIRELY in ${langName} — do not mix languages
 `;
+}
 
-/**
- * Генерирует подробное обоснование для врача — детальный клинический разбор.
- */
-const DOCTOR_EXPLANATION_PROMPT = `
+function getDoctorPrompt(lang: Lang): string {
+  const langName = LANG_NAMES[lang];
+  if (lang === "en") {
+    return `
+You are a clinical decision support system providing detailed analysis for a DOCTOR.
+The ML model made a preliminary diagnosis based on patient-reported symptoms.
+Provide a thorough clinical reasoning explanation in English.
+
+YOUR RESPONSE MUST INCLUDE ALL OF THESE SECTIONS:
+
+1. **Clinical Reasoning**: Why this specific diagnosis — which symptoms and their combination point to it. Note the weight of each symptom.
+
+2. **Differential Diagnosis**: What other conditions should be considered given the symptoms and why they are less likely (or why they cannot be ruled out).
+
+3. **Key Symptoms**: Which symptoms were decisive for the diagnosis and which were supportive. Note any "red flags".
+
+4. **Recommended Tests**: What laboratory tests and examinations should be ordered to confirm/exclude the diagnosis.
+
+5. **Points of Attention**: Warnings about possible complications, what to monitor.
+
+6. **Laboratory Data**: If lab results are provided, mention specific values and their clinical significance for this diagnosis.
+
+RULES:
+- Write in English, medical terminology is OK (this is for doctors)
+- Be thorough and detailed (8-15 sentences minimum)
+- Use markdown formatting: **bold** for headers, bullet points for lists
+- Reference specific symptoms with severity levels
+- This is an AI ASSISTANT tool, not a replacement for clinical judgment — state this clearly
+- Do NOT output JSON
+`;
+  }
+
+  if (lang === "kk") {
+    return `
+You are a clinical decision support system providing detailed analysis for a DOCTOR.
+The ML model made a preliminary diagnosis based on patient-reported symptoms.
+Provide a thorough clinical reasoning explanation in Kazakh.
+
+YOUR RESPONSE MUST INCLUDE ALL OF THESE SECTIONS:
+
+1. **Клиникалық негіздеме**: Неге дәл осы диагноз — қандай симптомдар мен олардың комбинациясы көрсетеді.
+
+2. **Дифференциалды диагностика**: Осы симптоматикада тағы қандай аурулар қарастырылуы керек.
+
+3. **Негізгі симптомдар**: Қандай симптомдар шешуші болды. "Қызыл жалаушаларды" атаңыз.
+
+4. **Ұсынылатын зерттеулер**: Диагнозды растау/жоққа шығару үшін қандай зерттеулер тағайындау керек.
+
+5. **Назар аударатын жайттар**: Ықтимал асқынулар, нені бақылау керек.
+
+6. **Зертханалық деректер**: Егер сараптама нәтижелері берілсе, нақты көрсеткіштерді атаңыз.
+
+RULES:
+- Write in Kazakh, medical terminology is OK (this is for doctors)
+- Be thorough and detailed (8-15 sentences minimum)
+- Use markdown formatting: **bold** for headers, bullet points for lists
+- Reference specific symptoms with severity levels
+- This is an AI ASSISTANT tool, not a replacement for clinical judgment — state this clearly
+- Do NOT output JSON
+`;
+  }
+
+  // Default: Russian
+  return `
 You are a clinical decision support system providing detailed analysis for a DOCTOR.
 The ML model made a preliminary diagnosis based on patient-reported symptoms.
 Provide a thorough clinical reasoning explanation in Russian.
@@ -51,11 +117,66 @@ RULES:
 - This is an AI ASSISTANT tool, not a replacement for clinical judgment — state this clearly
 - Do NOT output JSON
 `;
+}
+
+const FALLBACK_PATIENT: Record<Lang, string> = {
+  ru: "Анализ симптомов завершён. Рекомендуем обратиться к врачу.",
+  en: "Symptom analysis complete. We recommend consulting a doctor.",
+  kk: "Симптомдар талдауы аяқталды. Дәрігерге жүгінуді ұсынамыз.",
+};
+
+const FALLBACK_DOCTOR: Record<Lang, string> = {
+  ru: "Автоматическое обоснование недоступно.",
+  en: "Automatic clinical reasoning is unavailable.",
+  kk: "Автоматты клиникалық негіздеме қол жетімсіз.",
+};
+
+const FALLBACK_DOCTOR_NO_KEY: Record<Lang, string> = {
+  ru: "API ключ не настроен. Автоматическое обоснование недоступно.",
+  en: "API key not configured. Automatic reasoning unavailable.",
+  kk: "API кілті бапталмаған. Автоматты негіздеме қол жетімсіз.",
+};
+
+const FALLBACK_DOCTOR_ERROR: Record<Lang, string> = {
+  ru: "Произошла ошибка при генерации обоснования.",
+  en: "An error occurred while generating the reasoning.",
+  kk: "Негіздеме жасау кезінде қате орын алды.",
+};
 
 export interface ExplanationResult {
   patientExplanation: string;
   doctorExplanation: string;
   error?: string;
+}
+
+function getContextMessage(
+  userMessage: string,
+  symptomsText: string,
+  diagnosisLabel: string,
+  diagnosisName: string,
+  topDiseasesText: string,
+  labSection: string,
+  lang: Lang
+): string {
+  if (lang === "en") {
+    return `Patient wrote: "${userMessage}"
+Detected symptoms: ${symptomsText}
+Main ML model diagnosis: ${diagnosisLabel} (${diagnosisName})
+Top 3 probable conditions:
+${topDiseasesText}${labSection}`;
+  }
+  if (lang === "kk") {
+    return `Пациент жазды: "${userMessage}"
+Анықталған симптомдар: ${symptomsText}
+ML моделінің негізгі диагнозы: ${diagnosisLabel} (${diagnosisName})
+Ең ықтимал 3 ауру:
+${topDiseasesText}${labSection}`;
+  }
+  return `Пациент написал: "${userMessage}"
+Обнаруженные симптомы: ${symptomsText}
+Основной диагноз ML-модели: ${diagnosisLabel} (${diagnosisName})
+Топ-3 вероятных заболеваний:
+${topDiseasesText}${labSection}`;
 }
 
 export async function generateExplanation(
@@ -64,12 +185,13 @@ export async function generateExplanation(
   diagnosisName: string,
   diagnosisLabel: string,
   topDiseases: { name: string; label: string; score: number }[],
-  labInfluences?: { markerName: string; status: "high" | "low"; direction: string; effect: "boost" | "suppress"; diseases: string[]; delta: number }[]
+  labInfluences?: { markerName: string; status: "high" | "low"; direction: string; effect: "boost" | "suppress"; diseases: string[]; delta: number }[],
+  lang: Lang = "ru"
 ): Promise<ExplanationResult> {
   if (!GROQ_API_KEY) {
     return {
-      patientExplanation: "Анализ симптомов завершён. Рекомендуем обратиться к врачу.",
-      doctorExplanation: "API ключ не настроен. Автоматическое обоснование недоступно.",
+      patientExplanation: FALLBACK_PATIENT[lang],
+      doctorExplanation: FALLBACK_DOCTOR_NO_KEY[lang],
     };
   }
 
@@ -80,21 +202,19 @@ export async function generateExplanation(
 
   let labSection = "";
   if (labInfluences && labInfluences.length > 0) {
+    const boostLabel = lang === "en" ? "boosts" : lang === "kk" ? "күшейтеді" : "усиливает";
+    const suppressLabel = lang === "en" ? "reduces" : lang === "kk" ? "төмендетеді" : "снижает";
     const labLines = labInfluences.map(
       (inf) =>
-        `- ${inf.markerName}: ${inf.direction} → ${inf.effect === "boost" ? "усиливает" : "снижает"}: ${inf.diseases.join(", ")}`
+        `- ${inf.markerName}: ${inf.direction} → ${inf.effect === "boost" ? boostLabel : suppressLabel}: ${inf.diseases.join(", ")}`
     );
-    labSection = `\nДанные лабораторных анализов пациента:\n${labLines.join("\n")}`;
+    const labHeader = lang === "en" ? "\nPatient lab data:" : lang === "kk" ? "\nПациенттің зертханалық деректері:" : "\nДанные лабораторных анализов пациента:";
+    labSection = `${labHeader}\n${labLines.join("\n")}`;
   }
 
-  const contextMessage = `Пациент написал: "${userMessage}"
-Обнаруженные симптомы: ${symptomsText}
-Основной диагноз ML-модели: ${diagnosisLabel} (${diagnosisName})
-Топ-3 вероятных заболеваний:
-${topDiseasesText}${labSection}`;
+  const contextMessage = getContextMessage(userMessage, symptomsText, diagnosisLabel, diagnosisName, topDiseasesText, labSection, lang);
 
   try {
-    // Запускаем оба запроса параллельно
     const [patientResp, doctorResp] = await Promise.all([
       fetch("https://api.groq.com/openai/v1/chat/completions", {
         method: "POST",
@@ -105,7 +225,7 @@ ${topDiseasesText}${labSection}`;
         body: JSON.stringify({
           model: GROQ_MODEL,
           messages: [
-            { role: "system", content: PATIENT_EXPLANATION_PROMPT },
+            { role: "system", content: getPatientPrompt(lang) },
             { role: "user", content: contextMessage },
           ],
           temperature: 0.3,
@@ -121,7 +241,7 @@ ${topDiseasesText}${labSection}`;
         body: JSON.stringify({
           model: GROQ_MODEL,
           messages: [
-            { role: "system", content: DOCTOR_EXPLANATION_PROMPT },
+            { role: "system", content: getDoctorPrompt(lang) },
             { role: "user", content: contextMessage },
           ],
           temperature: 0.3,
@@ -130,8 +250,8 @@ ${topDiseasesText}${labSection}`;
       }),
     ]);
 
-    let patientExplanation = "Анализ симптомов завершён. Рекомендуем обратиться к врачу.";
-    let doctorExplanation = "Автоматическое обоснование недоступно.";
+    let patientExplanation = FALLBACK_PATIENT[lang];
+    let doctorExplanation = FALLBACK_DOCTOR[lang];
 
     if (patientResp.ok) {
       const data = await patientResp.json();
@@ -149,8 +269,8 @@ ${topDiseasesText}${labSection}`;
   } catch (err) {
     console.error("generateExplanation error:", err);
     return {
-      patientExplanation: "Анализ симптомов завершён. Рекомендуем обратиться к врачу.",
-      doctorExplanation: "Произошла ошибка при генерации обоснования.",
+      patientExplanation: FALLBACK_PATIENT[lang],
+      doctorExplanation: FALLBACK_DOCTOR_ERROR[lang],
       error: err instanceof Error ? err.message : "Unknown error",
     };
   }
