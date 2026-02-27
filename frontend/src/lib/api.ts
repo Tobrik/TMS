@@ -60,17 +60,20 @@ export interface DoctorLoginResponse {
   } | null;
 }
 
+export interface AnalysSlice {
+  name: string;
+  label: string;
+  score: number;
+}
+
 export interface AnalysResponse {
   day: number;
-  preliminary_diagnose: string;
-  recept: string;
+  diseaseName: string;
+  diseaseLabel: string;
+  doctor: string;
+  recommendation: string;
+  slices: AnalysSlice[];
   score: number;
-  top1: string;
-  top2: string;
-  top3: string;
-  top1_score: number;
-  top2_score: number;
-  top3_score: number;
 }
 
 export interface HistoryEntry {

@@ -14,14 +14,11 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ChatMessage } from "@/components/ChatMessage";
 import { DiagnosisCard } from "@/components/DiagnosisCard";
-import { LoadingIndicator } from "@/components/LoadingIndicator";
 import { DiagnosisSkeleton } from "@/components/DiagnosisSkeleton";
 import { analyzeSymptoms } from "@/app/actions/analyzeSymptoms";
 import { generateExplanation } from "@/app/actions/generateExplanation";
 import { SYMPTOM_LABELS, type SymptomCode } from "@/lib/symptoms";
-import { sendAnalysis, saveExplanation, getHistory, getLabResults, logout as apiLogout, type HistoryEntry, type LabResultItem } from "@/lib/api";
-import { applyLabContext } from "@/lib/labMarkerMap";
-import { predict } from "@/lib/predictor";
+import { sendAnalysis, saveExplanation, getHistory, logout as apiLogout, type HistoryEntry } from "@/lib/api";
 import {
   DISEASE_LABELS,
 } from "@/lib/diseaseWeights";
@@ -76,8 +73,8 @@ function saveMessages(patientId: number, msgs: Message[]): void {
   }
 }
 
-// Frontend predictor используется для отображения (лучшая точность с penalties и red flags).
-// Backend /analys — только для хранения в БД.
+// LLM (Groq) используется только для парсинга текста → вектор симптомов.
+// Предикт делается на бэкенде через /analys (ML модель).
 
 export default function ChatPage() {
   const router = useRouter();
@@ -161,23 +158,10 @@ export default function ChatPage() {
     setIsLoading(true);
 
     try {
-      // Step 1: LLM evaluates symptoms + fetch recent lab results (parallel)
-      const [symptomResult, labFetch] = await Promise.allSettled([
-        analyzeSymptoms(text),
-        patientId ? getLabResults(patientId) : Promise.resolve({ results: [] }),
-      ]);
+      // Step 1: LLM extracts symptoms from text
+      const symptomResult = await analyzeSymptoms(text);
 
-      const { vector, detectedSymptoms, error, noSymptoms } =
-        symptomResult.status === "fulfilled"
-          ? symptomResult.value
-          : { vector: [] as number[], detectedSymptoms: [] as string[], error: "Analysis failed", noSymptoms: false };
-
-      const recentLabItems: LabResultItem[] =
-        labFetch.status === "fulfilled"
-          ? labFetch.value.results.slice(0, 3).flatMap((r) => r.results)
-          : [];
-
-      const labContext = applyLabContext(recentLabItems);
+      const { vector, detectedSymptoms, error, noSymptoms } = symptomResult;
 
       if (error) {
         setMessages((prev) => [
@@ -208,11 +192,25 @@ export default function ChatPage() {
         return;
       }
 
-      // Step 2: Frontend prediction (improved algorithm with penalties, red flags & lab context)
-      const diagnosis = predict(vector, labContext);
-
-      // Step 3: Send to backend for storage in DB
+      // Step 2: Send symptoms to backend ML model for prediction + storage
       const analysisResult = await sendAnalysis(patientId, vector, "Nothing").catch(() => null);
+
+      // Build DiagnosisResult from backend response
+      const diagnosis: DiagnosisResult = analysisResult
+        ? {
+            diseaseName: analysisResult.diseaseName,
+            diseaseLabel: analysisResult.diseaseLabel,
+            doctor: analysisResult.doctor,
+            recommendation: analysisResult.recommendation,
+            slices: analysisResult.slices,
+          }
+        : {
+            diseaseName: "Unknown",
+            diseaseLabel: "Не удалось определить",
+            doctor: "Терапевт",
+            recommendation: "Произошла ошибка при получении диагноза. Попробуйте ещё раз.",
+            slices: [],
+          };
 
       // Build symptom labels for display
       const symptomNames = detectedSymptoms
@@ -241,7 +239,7 @@ export default function ChatPage() {
         diagnosis.diseaseName,
         diagnosis.diseaseLabel,
         topDiseases,
-        labContext.hasData ? labContext.influences : undefined,
+        undefined,
       );
 
       diagnosis.patientExplanation = patientExplanation;

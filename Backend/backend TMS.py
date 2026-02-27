@@ -171,6 +171,38 @@ disease_recommendations = {
     "Common Cold": "Покой, тёплое питьё, промывание носа, жаропонижающее при необходимости."
 }
 
+disease_labels = {
+    "Gastroenteritis": "Гастроэнтерит (Кишечная инфекция)",
+    "Croup": "Круп (Острый ларинготрахеит)",
+    "Scarlet Fever": "Скарлатина",
+    "Eczema": "Экзема / Дерматит",
+    "Asthma": "Бронхиальная астма",
+    "Type 1 Diabetes": "Сахарный диабет 1 типа (Подозрение)",
+    "Bronchiolitis": "Бронхиолит",
+    "Meningitis": "Менингит",
+    "Influenza": "Грипп / ОРВИ",
+    "Pneumonia": "Пневмония",
+    "Chickenpox": "Ветрянка",
+    "Appendicitis": "Аппендицит",
+    "Common Cold": "Простуда (ОРЗ)"
+}
+
+disease_doctors = {
+    "Gastroenteritis": "Гастроэнтеролог / Инфекционист",
+    "Croup": "Педиатр / Скорая (если задыхается)",
+    "Scarlet Fever": "Инфекционист / Педиатр",
+    "Eczema": "Дерматолог",
+    "Asthma": "Пульмонолог / Аллерголог",
+    "Type 1 Diabetes": "Эндокринолог (Срочно)",
+    "Bronchiolitis": "Педиатр / Пульмонолог",
+    "Meningitis": "СКОРАЯ ПОМОЩЬ (103) / Невролог",
+    "Influenza": "Терапевт",
+    "Pneumonia": "Терапевт / Пульмонолог",
+    "Chickenpox": "Терапевт (вызов на дом)",
+    "Appendicitis": "СКОРАЯ ПОМОЩЬ (Хирургия)",
+    "Common Cold": "Терапевт"
+}
+
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
 
 symptom_list =[
@@ -611,13 +643,13 @@ def model_predict(symptoms):
         for i in range(len(symptoms)):
             f += model[0][i] * symptoms[i]
             f_max += model[0][i] * 3
-            if model[0][i] > 0:
-                relevant += 1
-                if symptoms[i] > 0:
-                    matched += 1
+            #if model[0][i] > 0:
+                #relevant += 1
+                #if symptoms[i] > 0:
+                    #matched += 1
         score = f / f_max
-        if relevant > 0 and matched == 0:
-            score *= 0.1
+        #if relevant > 0 and matched == 0:
+            #score *= 0.1
         score_dict[dis] = score
     pre_diagnose = sorted(score_dict.items(),key = lambda x: x[1] ,reverse = True)[:3]
     return pre_diagnose
@@ -784,24 +816,45 @@ async def analys_endpoint(body: AnalysRequest, user: dict = Depends(require_pati
     patient_id = user["patient_id"]
 
     top3 = model_predict(body.symptoms)
+    top1_name = top3[0][0]
+    top1_score = top3[0][1]
     score = (top3[0][1]+top3[1][1]+top3[2][1])/3
     preliminary_diagnose = top3[0][0] + " " + top3[1][0] + " " + top3[2][0]
-    if score < 0.2 and body.diagnose_setup == "Nothing":
+    if top1_score < 0.32 and body.diagnose_setup == "Nothing":
         preliminary_diagnose = "Nothing"
 
-    recept = disease_recommendations.get(top3[0][0], "Nothing")
+    recept = disease_recommendations.get(top1_name, "Nothing")
     day = insert_disease(patient_id, body.symptoms, preliminary_diagnose, score, body.diagnose_setup, None, recept)
+
+    # Build top-3 slices with labels and scores
+    slices = []
+    for name, sc in top3:
+        slices.append({
+            "name": name,
+            "label": disease_labels.get(name, name),
+            "score": sc,
+        })
+
+    # If top1 confidence is too low, return "Unknown"
+    if top1_score < 0.32:
+        return {
+            "day": day,
+            "diseaseName": "Unknown",
+            "diseaseLabel": "Не удалось определить",
+            "doctor": "Терапевт",
+            "recommendation": "Симптомы не специфичны или недостаточно данных. Пожалуйста, опишите состояние подробнее.",
+            "slices": [],
+            "score": score,
+        }
+
     return {
         "day": day,
-        "preliminary_diagnose": preliminary_diagnose,
-        "recept": recept,
-        "score": score,
-        "top1": top3[0][0],
-        "top2": top3[1][0],
-        "top3": top3[2][0],
-        "top1_score": top3[0][1],
-        "top2_score": top3[1][1],
-        "top3_score": top3[2][1],
+        "diseaseName": top1_name,
+        "diseaseLabel": disease_labels.get(top1_name, top1_name),
+        "doctor": disease_doctors.get(top1_name, "Терапевт"),
+        "recommendation": disease_recommendations.get(top1_name, "Консультация врача обязательна."),
+        "slices": slices,
+        "score": top1_score,
     }
 
 @app.post("/save_explanation")
