@@ -12,13 +12,16 @@ import {
 } from "recharts";
 import { TrendingUp, AlertTriangle } from "lucide-react";
 import { getSymptomGraph, type SymptomGraphEntry } from "@/lib/api";
-import { SYMPTOM_LIST, SYMPTOM_LABELS, type SymptomCode } from "@/lib/symptoms";
+import { SYMPTOM_LIST, type SymptomCode } from "@/lib/symptoms";
+import { getSymptomLabel } from "@/lib/symptoms";
+import { t, type Lang } from "@/lib/i18n";
 
 interface SymptomTrendProps {
   patientId: number;
+  lang?: Lang;
 }
 
-export function SymptomTrend({ patientId }: SymptomTrendProps) {
+export function SymptomTrend({ patientId, lang = "ru" }: SymptomTrendProps) {
   const [selectedSymptom, setSelectedSymptom] = useState<string>(SYMPTOM_LIST[0]);
   const [data, setData] = useState<SymptomGraphEntry[]>([]);
   const [loading, setLoading] = useState(false);
@@ -47,7 +50,7 @@ export function SymptomTrend({ patientId }: SymptomTrendProps) {
     <div className="space-y-3">
       <div className="flex items-center gap-2">
         <TrendingUp className="h-5 w-5 text-gray-400" />
-        <h3 className="font-semibold text-gray-900 text-sm">Динамика симптомов</h3>
+        <h3 className="font-semibold text-gray-900 text-sm">{t("symptomDynamics", lang)}</h3>
       </div>
 
       <select
@@ -57,25 +60,25 @@ export function SymptomTrend({ patientId }: SymptomTrendProps) {
       >
         {SYMPTOM_LIST.map((code) => (
           <option key={code} value={code}>
-            {SYMPTOM_LABELS[code as SymptomCode]} ({code})
+            {getSymptomLabel(code as SymptomCode, lang)} ({code})
           </option>
         ))}
       </select>
 
       {loading ? (
         <div className="h-48 flex items-center justify-center text-sm text-gray-400">
-          Загрузка...
+          {t("loadingEllipsis", lang)}
         </div>
       ) : chartData.length === 0 ? (
         <div className="h-48 flex items-center justify-center text-sm text-gray-400">
-          Нет данных для отображения
+          {t("noDataToDisplay", lang)}
         </div>
       ) : (
         <>
           {isWorsening && (
             <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-red-50 border border-red-200">
               <AlertTriangle className="h-4 w-4 text-red-500" />
-              <span className="text-sm text-red-700">Тренд ухудшения</span>
+              <span className="text-sm text-red-700">{t("worseningTrend", lang)}</span>
             </div>
           )}
 
@@ -98,8 +101,8 @@ export function SymptomTrend({ patientId }: SymptomTrendProps) {
                   width={30}
                 />
                 <Tooltip
-                  formatter={(value) => [`Тяжесть: ${value}`, ""]}
-                  labelFormatter={(label) => `Дата: ${label}`}
+                  formatter={(value) => [`${t("severity", lang)}: ${value}`, ""]}
+                  labelFormatter={(label) => `${t("date", lang)}: ${label}`}
                   contentStyle={{
                     borderRadius: "8px",
                     border: "1px solid #e5e7eb",

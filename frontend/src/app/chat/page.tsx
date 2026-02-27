@@ -17,11 +17,9 @@ import { DiagnosisCard } from "@/components/DiagnosisCard";
 import { DiagnosisSkeleton } from "@/components/DiagnosisSkeleton";
 import { analyzeSymptoms } from "@/app/actions/analyzeSymptoms";
 import { generateExplanation } from "@/app/actions/generateExplanation";
-import { SYMPTOM_LABELS, type SymptomCode } from "@/lib/symptoms";
+import { getSymptomLabel, type SymptomCode } from "@/lib/symptoms";
 import { sendAnalysis, saveExplanation, getHistory, logout as apiLogout, type HistoryEntry } from "@/lib/api";
-import {
-  DISEASE_LABELS,
-} from "@/lib/diseaseWeights";
+import { getDiseaseLabel } from "@/lib/diseaseWeights";
 import type { DiagnosisResult } from "@/lib/types";
 import { t, getLang, setLang, type Lang } from "@/lib/i18n";
 
@@ -42,17 +40,16 @@ function getTime(): string {
 
 const CHAT_STORAGE_PREFIX = "chat_messages_";
 
-function getWelcomeMessage(): Message {
+function getWelcomeMessage(lang: Lang = "ru"): Message {
   return {
     id: "welcome",
     role: "assistant",
-    content:
-      "Здравствуйте! Я ваш AI-помощник по диагностике. Опишите свои симптомы, и я помогу определить возможное заболевание и порекомендую специалиста.\n\nНапример: \"У меня болит живот и тошнит\"",
+    content: t("welcomeMessage", lang),
     timestamp: getTime(),
   };
 }
 
-function loadMessages(patientId: number): Message[] {
+function loadMessages(patientId: number, lang: Lang): Message[] {
   try {
     const raw = localStorage.getItem(`${CHAT_STORAGE_PREFIX}${patientId}`);
     if (raw) {
@@ -62,7 +59,7 @@ function loadMessages(patientId: number): Message[] {
   } catch {
     // corrupted data
   }
-  return [getWelcomeMessage()];
+  return [getWelcomeMessage(lang)];
 }
 
 function saveMessages(patientId: number, msgs: Message[]): void {
@@ -75,6 +72,9 @@ function saveMessages(patientId: number, msgs: Message[]): void {
 
 // LLM (Groq) используется только для парсинга текста → вектор симптомов.
 // Предикт делается на бэкенде через /analys (ML модель).
+
+const LANG_CYCLE: Lang[] = ["ru", "en", "kk"];
+const LANG_LABELS: Record<Lang, string> = { ru: "RU", en: "EN", kk: "KZ" };
 
 export default function ChatPage() {
   const router = useRouter();
@@ -99,9 +99,10 @@ export default function ChatPage() {
       return;
     }
     const numId = parseInt(id, 10);
+    const currentLang = getLang();
     setPatientId(numId);
-    setMessages(loadMessages(numId));
-    setLangState(getLang());
+    setMessages(loadMessages(numId, currentLang));
+    setLangState(currentLang);
   }, [router]);
 
   useEffect(() => {
@@ -128,7 +129,7 @@ export default function ChatPage() {
     router.push("/");
   };
 
-  const loadHistory = async () => {
+  const loadHistoryData = async () => {
     if (!patientId) return;
     setShowHistory(true);
     setHistoryLoading(true);
@@ -169,7 +170,7 @@ export default function ChatPage() {
           {
             id: Date.now().toString(),
             role: "assistant",
-            content: `Произошла ошибка при анализе: ${error}`,
+            content: `${t("errorAnalysis", lang)}: ${error}`,
             timestamp: getTime(),
           },
         ]);
@@ -183,8 +184,7 @@ export default function ChatPage() {
           {
             id: Date.now().toString(),
             role: "assistant",
-            content:
-              "Я медицинский ассистент. Пожалуйста, опишите ваши симптомы, и я помогу определить возможное заболевание.\n\nНапример:\n- \"У меня кашель и температура 38\"\n- \"Болит голова и тошнит\"\n- \"Появилась сыпь и зуд\"",
+            content: t("noSymptomsMessage", lang),
             timestamp: getTime(),
           },
         ]);
@@ -199,16 +199,19 @@ export default function ChatPage() {
       const diagnosis: DiagnosisResult = analysisResult
         ? {
             diseaseName: analysisResult.diseaseName,
-            diseaseLabel: analysisResult.diseaseLabel,
+            diseaseLabel: getDiseaseLabel(analysisResult.diseaseName, lang),
             doctor: analysisResult.doctor,
             recommendation: analysisResult.recommendation,
-            slices: analysisResult.slices,
+            slices: analysisResult.slices.map((s) => ({
+              ...s,
+              label: getDiseaseLabel(s.name, lang),
+            })),
           }
         : {
             diseaseName: "Unknown",
-            diseaseLabel: "Не удалось определить",
-            doctor: "Терапевт",
-            recommendation: "Произошла ошибка при получении диагноза. Попробуйте ещё раз.",
+            diseaseLabel: lang === "en" ? "Could not determine" : lang === "kk" ? "Анықтау мүмкін болмады" : "Не удалось определить",
+            doctor: lang === "en" ? "General Practitioner" : "Терапевт",
+            recommendation: t("errorDiagnosis", lang),
             slices: [],
           };
 
@@ -219,10 +222,10 @@ export default function ChatPage() {
           if (match) {
             const code = match[1] as SymptomCode;
             const sev = match[2];
-            const label = SYMPTOM_LABELS[code] || code;
+            const label = getSymptomLabel(code, lang);
             return `${label} (${sev}/3)`;
           }
-          return SYMPTOM_LABELS[s as SymptomCode] || s;
+          return getSymptomLabel(s as SymptomCode, lang);
         })
         .join(", ");
 
@@ -254,7 +257,7 @@ export default function ChatPage() {
       const assistantMsg: Message = {
         id: (Date.now() + 1).toString(),
         role: "assistant",
-        content: `Обнаруженные симптомы: ${symptomNames}`,
+        content: `${t("detectedSymptoms", lang)}: ${symptomNames}`,
         timestamp: getTime(),
         diagnosis,
       };
@@ -266,7 +269,7 @@ export default function ChatPage() {
         {
           id: Date.now().toString(),
           role: "assistant",
-          content: "Произошла непредвиденная ошибка. Попробуйте ещё раз.",
+          content: t("errorGeneral", lang),
           timestamp: getTime(),
         },
       ]);
@@ -277,7 +280,8 @@ export default function ChatPage() {
   };
 
   const toggleLang = () => {
-    const newLang = lang === "ru" ? "kk" : "ru";
+    const idx = LANG_CYCLE.indexOf(lang);
+    const newLang = LANG_CYCLE[(idx + 1) % LANG_CYCLE.length];
     setLang(newLang);
     setLangState(newLang);
   };
@@ -299,11 +303,11 @@ export default function ChatPage() {
           </div>
           <div>
             <h1 className="font-semibold text-gray-900 text-sm">
-              TMS Assistant
+              {t("chatTitle", lang)}
             </h1>
             <p className="text-xs text-emerald-500 flex items-center gap-1">
               <span className="w-1.5 h-1.5 bg-emerald-500 rounded-full inline-block" />
-              Онлайн
+              {t("online", lang)}
             </p>
           </div>
         </div>
@@ -313,22 +317,22 @@ export default function ChatPage() {
             size="sm"
             onClick={toggleLang}
             className="text-xs font-semibold text-gray-500 px-2"
-            title="Сменить язык"
+            title={t("changeLang", lang)}
           >
-            {lang === "ru" ? "KZ" : "RU"}
+            {LANG_LABELS[lang]}
           </Button>
           <Button
             variant="ghost"
             size="icon"
             onClick={() => router.push("/lab")}
-            title="Мои анализы"
+            title={t("myAnalyses", lang)}
           >
             <FlaskConical className="h-5 w-5 text-gray-500" />
           </Button>
           <Button
             variant="ghost"
             size="icon"
-            onClick={loadHistory}
+            onClick={loadHistoryData}
             title={t("history", lang)}
           >
             <History className="h-5 w-5 text-gray-500" />
@@ -354,7 +358,7 @@ export default function ChatPage() {
           <div className="relative ml-auto w-full max-w-sm bg-white h-full shadow-2xl flex flex-col">
             <div className="flex items-center justify-between p-4 border-b">
               <h2 className="font-semibold text-gray-900">
-                История диагнозов
+                {t("historyTitle", lang)}
               </h2>
               <Button
                 variant="ghost"
@@ -367,11 +371,11 @@ export default function ChatPage() {
             <div className="flex-1 overflow-y-auto p-4 space-y-3">
               {historyLoading ? (
                 <p className="text-sm text-gray-500 text-center py-8">
-                  Загрузка...
+                  {t("loading", lang)}
                 </p>
               ) : history.length === 0 ? (
                 <p className="text-sm text-gray-500 text-center py-8">
-                  Нет записей
+                  {t("noRecords", lang)}
                 </p>
               ) : (
                 history.map((entry) => (
@@ -381,8 +385,7 @@ export default function ChatPage() {
                   >
                     <div className="flex justify-between items-center">
                       <span className="text-sm font-medium text-gray-900">
-                        {DISEASE_LABELS[entry.disease_predict] ||
-                          entry.disease_predict}
+                        {getDiseaseLabel(entry.disease_predict, lang)}
                       </span>
                       <span className="text-xs text-gray-400">
                         {entry.created_at?.split("T")[0] || entry.created_at}
@@ -390,7 +393,7 @@ export default function ChatPage() {
                     </div>
                     {entry.score !== null && (
                       <p className="text-xs text-gray-500">
-                        Уверенность: {Math.round(entry.score * 100)}%
+                        {t("confidence", lang)}: {Math.round(entry.score * 100)}%
                       </p>
                     )}
                     {entry.recept && (
@@ -398,7 +401,7 @@ export default function ChatPage() {
                     )}
                     {entry.doctor_name && (
                       <p className="text-xs text-blue-600">
-                        Врач: {entry.doctor_name}
+                        {t("doctor", lang)}: {entry.doctor_name}
                       </p>
                     )}
                   </div>
@@ -421,13 +424,13 @@ export default function ChatPage() {
             {msg.diagnosis && (
               <div className="flex">
                 <div className="ml-11">
-                  <DiagnosisCard diagnosis={msg.diagnosis} />
+                  <DiagnosisCard diagnosis={msg.diagnosis} lang={lang} />
                 </div>
               </div>
             )}
           </div>
         ))}
-        {isLoading && <DiagnosisSkeleton />}
+        {isLoading && <DiagnosisSkeleton lang={lang} />}
         <div ref={messagesEndRef} />
       </div>
 
@@ -456,7 +459,7 @@ export default function ChatPage() {
           </Button>
         </div>
         <p className="text-center text-xs text-gray-400 mt-2">
-          MVP — демонстрационный прототип. Диагнозы не являются медицинскими рекомендациями.
+          {t("mvpDisclaimer", lang)}
         </p>
       </div>
     </div>

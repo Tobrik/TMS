@@ -13,9 +13,11 @@ import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { PieChart } from "@/components/PieChart";
 import type { DiagnosisResult } from "@/lib/types";
+import { t, getLang, type Lang } from "@/lib/i18n";
 
 interface DiagnosisCardProps {
   diagnosis: DiagnosisResult;
+  lang?: Lang;
 }
 
 function getUrgencyLevel(diseaseName: string): "low" | "medium" | "high" {
@@ -26,26 +28,28 @@ function getUrgencyLevel(diseaseName: string): "low" | "medium" | "high" {
   return "low";
 }
 
-const urgencyConfig = {
-  low: {
-    color: "bg-emerald-50 border-emerald-200",
-    badge: "bg-emerald-100 text-emerald-700",
-    label: "Низкая срочность",
-  },
-  medium: {
-    color: "bg-amber-50 border-amber-200",
-    badge: "bg-amber-100 text-amber-700",
-    label: "Средняя срочность",
-  },
-  high: {
-    color: "bg-red-50 border-red-200",
-    badge: "bg-red-100 text-red-700",
-    label: "Высокая срочность",
-  },
-};
-
-export function DiagnosisCard({ diagnosis }: DiagnosisCardProps) {
+export function DiagnosisCard({ diagnosis, lang }: DiagnosisCardProps) {
+  const l = lang || getLang();
   const urgency = getUrgencyLevel(diagnosis.diseaseName);
+
+  const urgencyConfig = {
+    low: {
+      color: "bg-emerald-50 border-emerald-200",
+      badge: "bg-emerald-100 text-emerald-700",
+      label: t("lowUrgency", l),
+    },
+    medium: {
+      color: "bg-amber-50 border-amber-200",
+      badge: "bg-amber-100 text-amber-700",
+      label: t("mediumUrgency", l),
+    },
+    high: {
+      color: "bg-red-50 border-red-200",
+      badge: "bg-red-100 text-red-700",
+      label: t("highUrgency", l),
+    },
+  };
+
   const config = urgencyConfig[urgency];
 
   return (
@@ -58,7 +62,7 @@ export function DiagnosisCard({ diagnosis }: DiagnosisCardProps) {
           <div className="flex items-center gap-2">
             <Stethoscope className="h-5 w-5 text-blue-600" />
             <span className="font-semibold text-sm text-gray-700">
-              Предварительный диагноз
+              {t("preliminaryDiag", l)}
             </span>
           </div>
           <Badge className={`text-xs ${config.badge} border-0`}>
@@ -83,7 +87,7 @@ export function DiagnosisCard({ diagnosis }: DiagnosisCardProps) {
         {diagnosis.slices && diagnosis.slices.length > 0 && (
           <div className="flex justify-center py-2">
             <div className="w-56">
-              <PieChart slices={diagnosis.slices} size={130} />
+              <PieChart slices={diagnosis.slices} size={130} lang={l} />
             </div>
           </div>
         )}
@@ -94,7 +98,7 @@ export function DiagnosisCard({ diagnosis }: DiagnosisCardProps) {
             <div className="flex items-center gap-2 mb-2">
               <FlaskConical className="h-4 w-4 text-violet-600" />
               <span className="text-xs font-semibold text-violet-700">
-                Учтены данные анализов
+                {t("labDataConsidered", l)}
               </span>
             </div>
             <div className="space-y-1.5">
@@ -112,7 +116,7 @@ export function DiagnosisCard({ diagnosis }: DiagnosisCardProps) {
                   </span>
                   <span className="text-gray-400 text-xs">→</span>
                   <span className="text-xs text-gray-600">
-                    {inf.effect === "boost" ? "подтверждает" : "снижает вероятность"}{" "}
+                    {inf.effect === "boost" ? t("boostEffect", l) : t("suppressEffect", l)}{" "}
                     {inf.diseases.map((d) => d).join(", ")}
                   </span>
                 </div>
@@ -126,7 +130,7 @@ export function DiagnosisCard({ diagnosis }: DiagnosisCardProps) {
           <UserRound className="h-5 w-5 text-blue-600 mt-0.5 shrink-0" />
           <div>
             <p className="text-xs text-gray-500 font-medium">
-              Рекомендуемый врач
+              {t("recommendedDoctor", l)}
             </p>
             <p className="text-sm font-semibold text-gray-800">
               {diagnosis.doctor}
@@ -141,7 +145,7 @@ export function DiagnosisCard({ diagnosis }: DiagnosisCardProps) {
             <Brain className="h-5 w-5 text-blue-600 mt-0.5 shrink-0" />
             <div>
               <p className="text-xs text-blue-500 font-medium">
-                Почему этот диагноз
+                {t("whyThisDiagnosis", l)}
               </p>
               <p className="text-sm text-gray-700 leading-relaxed">
                 {diagnosis.patientExplanation}
@@ -154,7 +158,7 @@ export function DiagnosisCard({ diagnosis }: DiagnosisCardProps) {
         <div className="flex items-start gap-3 bg-white/60 rounded-xl p-3">
           <Pill className="h-5 w-5 text-emerald-600 mt-0.5 shrink-0" />
           <div>
-            <p className="text-xs text-gray-500 font-medium">Рекомендации</p>
+            <p className="text-xs text-gray-500 font-medium">{t("recommendations", l)}</p>
             <p className="text-sm text-gray-700 leading-relaxed">
               {diagnosis.recommendation}
             </p>
@@ -165,8 +169,7 @@ export function DiagnosisCard({ diagnosis }: DiagnosisCardProps) {
       {/* Footer */}
       <div className="px-4 py-2.5 bg-white/40 border-t border-inherit">
         <p className="text-xs text-gray-400 text-center">
-          Это предварительная оценка AI. Обязательно обратитесь к врачу для
-          подтверждения диагноза.
+          {t("aiDisclaimerShort", l)}
         </p>
       </div>
     </Card>

@@ -1,8 +1,13 @@
 "use client";
 
 import { Bot } from "lucide-react";
+import { t, type Lang } from "@/lib/i18n";
 
-export function DiagnosisSkeleton() {
+interface DiagnosisSkeletonProps {
+  lang?: Lang;
+}
+
+export function DiagnosisSkeleton({ lang = "ru" }: DiagnosisSkeletonProps) {
   return (
     <div className="flex gap-3 items-start">
       <div className="w-8 h-8 rounded-full bg-gradient-to-br from-teal-400 to-emerald-500 flex items-center justify-center shrink-0">
@@ -32,7 +37,7 @@ export function DiagnosisSkeleton() {
           <div className="h-8 w-48 bg-gray-200 rounded-lg" />
         </div>
 
-        <p className="text-xs text-gray-400 ml-1">Анализирую симптомы...</p>
+        <p className="text-xs text-gray-400 ml-1">{t("analyzingSymptomsDots", lang)}</p>
       </div>
     </div>
   );

@@ -1,15 +1,17 @@
 "use client";
 
 import type { DiseaseSlice } from "@/lib/types";
+import { t, type Lang } from "@/lib/i18n";
 
 interface PieChartProps {
   slices: DiseaseSlice[];
   size?: number;
+  lang?: Lang;
 }
 
 const COLORS = ["#6366f1", "#f59e0b", "#10b981"]; // indigo, amber, emerald
 
-export function PieChart({ slices, size = 140 }: PieChartProps) {
+export function PieChart({ slices, size = 140, lang = "ru" }: PieChartProps) {
   const total = slices.reduce((sum, s) => sum + Math.max(s.score, 0), 0);
   if (total === 0) return null;
 
@@ -73,7 +75,7 @@ export function PieChart({ slices, size = 140 }: PieChartProps) {
           textAnchor="middle"
           className="fill-gray-400 text-[9px]"
         >
-          диагноза
+          {t("top3Diagnoses", lang)}
         </text>
       </svg>
 

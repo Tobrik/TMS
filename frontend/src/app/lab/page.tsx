@@ -6,8 +6,8 @@ import { Upload, ArrowLeft, FlaskConical, Loader2, ImageIcon, ShieldCheck } from
 import { Button } from "@/components/ui/button";
 import { LabResultCard } from "@/components/LabResultCard";
 import { uploadLabResult, getLabResults, type LabResult } from "@/lib/api";
+import { t, getLang, type Lang } from "@/lib/i18n";
 
-/** Crop top portion of image to remove PII (name, DOB, clinic) */
 async function cropTopOfImage(file: File, cropPercent = 0.15): Promise<File> {
   return new Promise((resolve, reject) => {
     const img = new Image();
@@ -36,6 +36,7 @@ async function cropTopOfImage(file: File, cropPercent = 0.15): Promise<File> {
 export default function LabPage() {
   const router = useRouter();
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const [lang] = useState<Lang>(getLang());
 
   const [patientId, setPatientId] = useState<number | null>(null);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
@@ -65,7 +66,7 @@ export default function LabPage() {
       const resp = await getLabResults(patientId);
       setHistory(resp.results);
     } catch {
-      // silently fail on history load
+      // silently fail
     } finally {
       setHistoryLoading(false);
     }
@@ -78,18 +79,17 @@ export default function LabPage() {
   async function handleFileSelect(file: File) {
     const allowed = ["image/jpeg", "image/png", "image/webp"];
     if (!allowed.includes(file.type)) {
-      setError("Поддерживаются только JPG, PNG и WebP");
+      setError(t("onlyJpgPngWebp", lang));
       return;
     }
     if (file.size > 10 * 1024 * 1024) {
-      setError("Файл слишком большой (макс. 10 МБ)");
+      setError(t("fileTooLarge", lang));
       return;
     }
     setError(null);
     setSelectedFile(file);
     setCurrentResult(null);
 
-    // Show preview (cropped if enabled)
     const displayFile = cropEnabled ? await cropTopOfImage(file) : file;
     const reader = new FileReader();
     reader.onload = (e) => setPreview(e.target?.result as string);
@@ -123,7 +123,7 @@ export default function LabPage() {
         err && typeof err === "object" && "response" in err
           ? (err as { response?: { data?: { detail?: string } } }).response?.data?.detail
           : undefined;
-      setError(msg || "Не удалось распознать анализ. Попробуйте другое фото.");
+      setError(msg || t("failedRecognize", lang));
     } finally {
       setIsAnalyzing(false);
     }
@@ -136,7 +136,6 @@ export default function LabPage() {
     setError(null);
   }
 
-  // Re-generate preview when crop toggle changes
   async function toggleCrop() {
     const next = !cropEnabled;
     setCropEnabled(next);
@@ -150,7 +149,6 @@ export default function LabPage() {
 
   return (
     <div className="min-h-screen bg-gray-50">
-      {/* Header */}
       <header className="bg-white border-b border-gray-200 px-4 py-3 flex items-center justify-between sticky top-0 z-10">
         <div className="flex items-center gap-3">
           <Button variant="ghost" size="icon" onClick={() => router.push("/chat")}>
@@ -160,14 +158,13 @@ export default function LabPage() {
             <FlaskConical className="h-5 w-5 text-white" />
           </div>
           <div>
-            <h1 className="font-semibold text-gray-900 text-sm">Мои анализы</h1>
-            <p className="text-xs text-gray-500">Загрузите фото для расшифровки</p>
+            <h1 className="font-semibold text-gray-900 text-sm">{t("myLabTitle", lang)}</h1>
+            <p className="text-xs text-gray-500">{t("uploadPhotoSubtitle", lang)}</p>
           </div>
         </div>
       </header>
 
       <main className="max-w-2xl mx-auto p-4 space-y-6">
-        {/* Privacy crop toggle */}
         {!currentResult && (
           <button
             onClick={toggleCrop}
@@ -179,14 +176,11 @@ export default function LabPage() {
           >
             <ShieldCheck className="h-4 w-4 shrink-0" />
             <span className="text-left">
-              {cropEnabled
-                ? "Защита ПДн включена — верхняя часть фото (ФИО, клиника) будет обрезана перед отправкой"
-                : "Защита ПДн выключена — фото отправляется целиком"}
+              {cropEnabled ? t("privacyOn", lang) : t("privacyOff", lang)}
             </span>
           </button>
         )}
 
-        {/* Upload Zone */}
         {!currentResult && (
           <div
             className={`
@@ -213,7 +207,7 @@ export default function LabPage() {
               <div className="space-y-4">
                 {cropEnabled && (
                   <p className="text-xs text-emerald-600 font-medium">
-                    Превью обрезанного фото (без шапки с ФИО)
+                    {t("croppedPreview", lang)}
                   </p>
                 )}
                 <img
@@ -224,34 +218,22 @@ export default function LabPage() {
                 <p className="text-sm text-gray-600">{selectedFile?.name}</p>
                 <div className="flex items-center justify-center gap-3">
                   <Button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handleAnalyze();
-                    }}
+                    onClick={(e) => { e.stopPropagation(); handleAnalyze(); }}
                     disabled={isAnalyzing}
                     className="bg-gradient-to-r from-purple-600 to-pink-500 hover:from-purple-700 hover:to-pink-600 text-white"
                   >
                     {isAnalyzing ? (
-                      <>
-                        <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                        Распознаю...
-                      </>
+                      <><Loader2 className="h-4 w-4 mr-2 animate-spin" />{t("recognizing", lang)}</>
                     ) : (
-                      <>
-                        <FlaskConical className="h-4 w-4 mr-2" />
-                        Распознать
-                      </>
+                      <><FlaskConical className="h-4 w-4 mr-2" />{t("recognize", lang)}</>
                     )}
                   </Button>
                   <Button
                     variant="outline"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      resetUpload();
-                    }}
+                    onClick={(e) => { e.stopPropagation(); resetUpload(); }}
                     disabled={isAnalyzing}
                   >
-                    Отмена
+                    {t("cancel", lang)}
                   </Button>
                 </div>
               </div>
@@ -261,55 +243,46 @@ export default function LabPage() {
                   <Upload className="h-8 w-8 text-purple-500" />
                 </div>
                 <div>
-                  <p className="text-sm font-medium text-gray-700">
-                    Перетащите фото анализа сюда
-                  </p>
-                  <p className="text-xs text-gray-500 mt-1">
-                    или нажмите для выбора файла (JPG, PNG, WebP до 10 МБ)
-                  </p>
+                  <p className="text-sm font-medium text-gray-700">{t("dragPhotoHere", lang)}</p>
+                  <p className="text-xs text-gray-500 mt-1">{t("orClickToSelect", lang)}</p>
                 </div>
               </div>
             )}
           </div>
         )}
 
-        {/* Error */}
         {error && (
           <div className="bg-red-50 border border-red-200 rounded-lg p-3 text-sm text-red-700">
             {error}
           </div>
         )}
 
-        {/* Current Result */}
         {currentResult && (
           <div className="space-y-3">
-            <LabResultCard result={currentResult} />
+            <LabResultCard result={currentResult} lang={lang} />
             <Button variant="outline" onClick={resetUpload} className="w-full">
               <ImageIcon className="h-4 w-4 mr-2" />
-              Загрузить другой анализ
+              {t("uploadAnother", lang)}
             </Button>
           </div>
         )}
 
-        {/* History */}
         {history.length > 0 && (
           <div className="space-y-3">
-            <h2 className="text-sm font-semibold text-gray-700">
-              Предыдущие анализы
-            </h2>
+            <h2 className="text-sm font-semibold text-gray-700">{t("previousAnalyses", lang)}</h2>
             {historyLoading ? (
               <div className="flex justify-center py-8">
                 <Loader2 className="h-6 w-6 animate-spin text-gray-400" />
               </div>
             ) : (
-              history.map((r) => <LabResultCard key={r.result_id} result={r} />)
+              history.map((r) => <LabResultCard key={r.result_id} result={r} lang={lang} />)
             )}
           </div>
         )}
 
         {history.length === 0 && !historyLoading && !currentResult && (
           <p className="text-center text-sm text-gray-400 py-8">
-            Пока нет загруженных анализов
+            {t("noAnalysesYet", lang)}
           </p>
         )}
       </main>
