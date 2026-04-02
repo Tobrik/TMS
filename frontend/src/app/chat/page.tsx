@@ -15,10 +15,8 @@ import { Input } from "@/components/ui/input";
 import { ChatMessage } from "@/components/ChatMessage";
 import { DiagnosisCard } from "@/components/DiagnosisCard";
 import { DiagnosisSkeleton } from "@/components/DiagnosisSkeleton";
-import { analyzeSymptoms } from "@/app/actions/analyzeSymptoms";
 import { generateExplanation } from "@/app/actions/generateExplanation";
-import { getSymptomLabel, type SymptomCode } from "@/lib/symptoms";
-import { sendAnalysis, saveExplanation, getHistory, logout as apiLogout, type HistoryEntry } from "@/lib/api";
+import { extractSymptoms, sendAnalysis, saveExplanation, getHistory, logout as apiLogout, type HistoryEntry } from "@/lib/api";
 import { getDiseaseLabel } from "@/lib/diseaseWeights";
 import type { DiagnosisResult } from "@/lib/types";
 import { t, getLang, setLang, type Lang } from "@/lib/i18n";
@@ -159,10 +157,9 @@ export default function ChatPage() {
     setIsLoading(true);
 
     try {
-      // Step 1: LLM extracts symptoms from text
-      const symptomResult = await analyzeSymptoms(text);
-
-      const { vector, detectedSymptoms, error, noSymptoms } = symptomResult;
+      // Step 1: Backend extracts DDXPlus evidence tokens from free text via LLaMA
+      const extractResult = await extractSymptoms(text);
+      const { evidences, age, sex, noSymptoms, error } = extractResult;
 
       if (error) {
         setMessages((prev) => [
@@ -178,7 +175,7 @@ export default function ChatPage() {
         return;
       }
 
-      if (noSymptoms || detectedSymptoms.length === 0) {
+      if (noSymptoms || evidences.length === 0) {
         setMessages((prev) => [
           ...prev,
           {
@@ -192,8 +189,8 @@ export default function ChatPage() {
         return;
       }
 
-      // Step 2: Send symptoms to backend ML model for prediction + storage
-      const analysisResult = await sendAnalysis(patientId, vector, "Nothing").catch(() => null);
+      // Step 2: Send evidences to sklearn model on backend for prediction + storage
+      const analysisResult = await sendAnalysis(patientId, evidences, age, sex, "Nothing").catch(() => null);
 
       // Build DiagnosisResult from backend response
       const diagnosis: DiagnosisResult = analysisResult
@@ -215,21 +212,14 @@ export default function ChatPage() {
             slices: [],
           };
 
-      // Build symptom labels for display
-      const symptomNames = detectedSymptoms
-        .map((s) => {
-          const match = s.match(/^(\w+)\s*\((\d+)\)$/);
-          if (match) {
-            const code = match[1] as SymptomCode;
-            const sev = match[2];
-            const label = getSymptomLabel(code, lang);
-            return `${label} (${sev}/3)`;
-          }
-          return getSymptomLabel(s as SymptomCode, lang);
-        })
-        .join(", ");
+      // Build symptom count label for display
+      const symptomNames = lang === "en"
+        ? `${evidences.length} symptoms detected`
+        : lang === "kk"
+        ? `${evidences.length} белгі анықталды`
+        : `Обнаружено признаков: ${evidences.length}`;
 
-      // Step 4: Generate AI explanation (why this diagnosis was chosen)
+      // Step 3: Generate AI explanation (why this diagnosis was chosen)
       const topDiseases = diagnosis.slices.map((s) => ({
         name: s.name,
         label: s.label,
@@ -238,7 +228,7 @@ export default function ChatPage() {
 
       const { patientExplanation, doctorExplanation } = await generateExplanation(
         text,
-        detectedSymptoms,
+        evidences,
         diagnosis.diseaseName,
         diagnosis.diseaseLabel,
         topDiseases,

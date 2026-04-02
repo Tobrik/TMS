@@ -29,6 +29,7 @@ from auth import (
     require_patient_or_doctor,
 )
 from crypto_utils import encrypt_field, decrypt_field
+from ml_model import sklearn_predict, build_extraction_prompt
 
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
@@ -99,8 +100,13 @@ class SymptomsRequest(BaseModel):
     symptom_str: str = Field(..., min_length=1)
 
 class AnalysRequest(BaseModel):
-    symptoms: List[int] = Field(..., min_length=23, max_length=23)
+    evidences: List[str] = Field(..., min_length=1, max_length=300)
+    age: int = Field(default=25, ge=0, le=120)
+    sex: str = Field(default="M", pattern="^[MF]$")
     diagnose_setup: str = "Nothing"
+
+class ExtractSymptomsRequest(BaseModel):
+    text: str = Field(..., min_length=3, max_length=2000)
 
 class SaveExplanationRequest(BaseModel):
     day_id: int = Field(..., gt=0)
@@ -139,68 +145,162 @@ class GetLabResultsRequest(BaseModel):
 
 # ─── Data & Config ───
 
-model_dict = {
-    "Gastroenteritis": ([0.0, 0.0, 0.0, 2.835492374437445, 15.358088877898277, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 2.2150830135431683, 0.0, 0.0], 43.76321546894878),
-    "Croup": ([0.0, 0.0, 11.445743094869425, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 2.87292660938857, 0.0, 0.0, 0.0, 11.52701610240259, 0.0, 0.0, 0.0], 32.031654663581826),
-    "Scarlet Fever": ([0.0, 0.0, 0.0, 0.0, 0.0, 9.116404717554731, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 9.159872877966544, 0.0, 0.0, 0.0, 8.910748251927256, 0.0, 0.0, 0.0, 0.0], 23.817103444179114),
-    "Eczema": ([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 12.088135680193556, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 12.230981001282307, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], 32.27669511833457),
-    "Asthma": ([0.0, 0.0, 4.013460044880404, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 3.148492399703434, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 15.56929617979114], 42.23353377651567),
-    "Type 1 Diabetes": ([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 4.226327290578648, 4.3550777255458515, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 4.999718366968764, 0.0], 69.86173564127515),
-    "Bronchiolitis": ([0.0, 0.0, 11.82227219023071, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 2.2277262934489515, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 11.708398608051098], 30.368790732206605),
-    "Meningitis": ([0.0, 0.0, 0.0, 0.0, 0.0, 8.995565067705446, 8.546131902138402, 0.0, 0.0, 0.0, 8.714651354612204, 2.2869737170763695, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], 21.466857330755033),
-    "Influenza": ([0.0, 0.0, 9.59320387475004, 0.0, 0.0, 8.640868953054095, 1.7856157416078982, 0.0, 8.959693076647547, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], 22.474301999408752),
-    "Pneumonia": ([0.0, 2.187194382475494, 10.2438779340937, 0.0, 0.0, 9.201196328535795, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 8.879709650994538, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], 22.039462525010897),
-    "Chickenpox": ([0.0, 0.0, 0.0, 0.0, 0.0, 3.1380009798357853, 0.0, 12.145343392428853, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 11.88079352135918, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], 30.971991926994647),
-    "Appendicitis": ([14.733187425381898, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 3.657776271847671, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 2.5721136493562833, 0.0, 0.0], 44.026175264172544),
-    "Common Cold": ([0.0, 0.0, 3.321662031504646, 0.0, 0.0, 1.9510386014496788, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 14.608440261670545, 3.248914037624695, 0.0, 0.0, 0.0, 0.0, 0.0], 42.32083725409407),
-}
+# model_dict removed — predictions now use sklearn RandomForest via ml_model.py
 
 disease_recommendations = {
-    "Gastroenteritis": "Регидратация (оральные растворы типа Регидрон), дробное питьё, диета. При боли – спазмолитик по возрасту.",
-    "Croup": "Увлажнённый прохладный воздух, ингаляции физраствором. При выраженном лающем кашле – консультация врача.",
-    "Scarlet Fever": "Жаропонижающее (парацетамол/ибупрофен по возрасту), обильное питьё. Обязателен осмотр врача (часто требуется антибиотик).",
-    "Eczema": "Увлажняющие кремы (эмоленты), антигистаминное при зуде, избегать аллергенов.",
-    "Asthma": "Ингаляции короткодействующим бронхолитиком (сальбутамол), контроль дыхания, избегать триггеров.",
-    "Type 1 Diabetes": "Контроль глюкозы, инсулинотерапия по назначению врача. Срочная консультация эндокринолога.",
-    "Bronchiolitis": "Обильное питьё, промывание носа, контроль дыхания. При одышке – срочно к врачу.",
-    "Meningitis": "Срочная госпитализация. Неотложное обращение за медицинской помощью.",
-    "Influenza": "Покой, обильное питьё, жаропонижающее (парацетамол/ибупрофен), при кашле – ACC/муколитик по возрасту.",
-    "Pneumonia": "Жаропонижающее при температуре, муколитики (ACC), обязательный осмотр врача (часто требуется антибиотик).",
-    "Chickenpox": "Обработка сыпи антисептиком, антигистаминное при зуде, жаропонижающее при температуре.",
-    "Appendicitis": "Срочно к хирургу. Не давать обезболивающие до осмотра врача.",
-    "Common Cold": "Покой, тёплое питьё, промывание носа, жаропонижающее при необходимости."
+    "Acute COPD exacerbation / infection": "Бронхолитики (сальбутамол), системные кортикостероиды, антибиотики при инфекции. Срочная консультация врача.",
+    "Acute dystonic reactions": "Немедленная отмена вызвавшего препарата, антихолинергические средства (дифенгидрамин). Срочно к врачу.",
+    "Acute laryngitis": "Голосовой покой, увлажнение воздуха, тёплое питьё, при необходимости — противовоспалительные.",
+    "Acute otitis media": "Жаропонижающее, обезболивающее. Консультация ЛОР-врача, возможна антибиотикотерапия.",
+    "Acute pulmonary edema": "СКОРАЯ ПОМОЩЬ НЕМЕДЛЕННО. Положение сидя, кислород, диуретики по назначению врача.",
+    "Acute rhinosinusitis": "Промывание носа солевым раствором, сосудосуживающие при необходимости. Консультация ЛОР при затяжном течении.",
+    "Allergic sinusitis": "Антигистаминные препараты, назальные кортикостероиды, избегать аллергенов.",
+    "Anaphylaxis": "СКОРАЯ ПОМОЩЬ НЕМЕДЛЕННО. Адреналин (эпинефрин) внутримышечно, антигистаминные, кортикостероиды.",
+    "Anemia": "Препараты железа / витамин B12 по назначению врача. Консультация гематолога для выяснения причины.",
+    "Atrial fibrillation": "СРОЧНАЯ консультация кардиолога. Антиаритмические препараты, контроль частоты сердечных сокращений.",
+    "Boerhaave": "СКОРАЯ ПОМОЩЬ НЕМЕДЛЕННО. Хирургическое вмешательство. Разрыв пищевода — жизнеугрожающее состояние.",
+    "Bronchiectasis": "Дренажный массаж, муколитики, антибиотики при обострении. Наблюдение пульмонолога.",
+    "Bronchiolitis": "Обильное питьё, промывание носа, контроль дыхания. При одышке — срочно к врачу.",
+    "Bronchitis": "Покой, обильное питьё, муколитики. При высокой температуре или затяжном течении — консультация врача.",
+    "Bronchospasm / acute asthma exacerbation": "Ингаляции сальбутамола немедленно. При тяжёлом приступе — СКОРАЯ ПОМОЩЬ.",
+    "Chagas": "Антипаразитарные препараты (бензнидазол/нифуртимокс). Консультация инфекциониста обязательна.",
+    "Chronic rhinosinusitis": "Назальные кортикостероиды, промывание носа, консультация ЛОР-врача.",
+    "Cluster headache": "Кислородная терапия, триптаны. Консультация невролога для подбора профилактического лечения.",
+    "Croup": "Увлажнённый прохладный воздух, ингаляции физраствором. При выраженном лающем кашле — консультация врача.",
+    "Ebola": "СКОРАЯ ПОМОЩЬ НЕМЕДЛЕННО. Изоляция, симптоматическое лечение в специализированном стационаре.",
+    "Epiglottitis": "СКОРАЯ ПОМОЩЬ НЕМЕДЛЕННО. Жизнеугрожающее состояние. Госпитализация, антибиотики.",
+    "GERD": "Изменение образа жизни (диета, позиционная терапия), ингибиторы протонной помпы. Консультация гастроэнтеролога.",
+    "Guillain-Barré syndrome": "СРОЧНАЯ госпитализация. Иммунотерапия (ВВИГ или плазмаферез), наблюдение невролога.",
+    "HIV (initial infection)": "СРОЧНАЯ консультация инфекциониста. Антиретровирусная терапия, мониторинг иммунного статуса.",
+    "Influenza": "Покой, обильное питьё, жаропонижающее (парацетамол/ибупрофен). При тяжёлом течении — осельтамивир.",
+    "Inguinal hernia": "Консультация хирурга. При ущемлении — СКОРАЯ ПОМОЩЬ НЕМЕДЛЕННО.",
+    "Larygospasm": "Успокоить пациента, дышать в пакет. При повторных эпизодах — консультация ЛОР.",
+    "Localized edema": "Выяснить причину (травма, аллергия, венозная недостаточность). Консультация врача.",
+    "Myasthenia gravis": "Ингибиторы холинэстеразы, консультация невролога. При миастеническом кризе — СКОРАЯ ПОМОЩЬ.",
+    "Myocarditis": "СРОЧНАЯ госпитализация. Постельный режим, противовоспалительное лечение под контролем кардиолога.",
+    "PSVT": "Вагусные пробы (Вальсальва). При неэффективности — СРОЧНАЯ консультация кардиолога / СКОРАЯ.",
+    "Pancreatic neoplasm": "СРОЧНАЯ консультация онколога и гастроэнтеролога. Дообследование (КТ, МРТ, биопсия).",
+    "Panic attack": "Дыхательные упражнения, успокоительные. Консультация психиатра/психолога для профилактики.",
+    "Pericarditis": "Противовоспалительные (НПВП, колхицин), покой. Консультация кардиолога обязательна.",
+    "Pneumonia": "Жаропонижающее при температуре, муколитики. Обязательный осмотр врача (часто требуется антибиотик).",
+    "Possible NSTEMI / STEMI": "СКОРАЯ ПОМОЩЬ НЕМЕДЛЕННО. Аспирин, нитроглицерин сублингвально. Инфаркт миокарда.",
+    "Pulmonary embolism": "СКОРАЯ ПОМОЩЬ НЕМЕДЛЕННО. Антикоагулянты, тромболизис по показаниям. Жизнеугрожающее состояние.",
+    "Pulmonary neoplasm": "СРОЧНАЯ консультация пульмонолога и онколога. Дообследование (КТ грудной клетки, биопсия).",
+    "SLE": "Консультация ревматолога. Гидроксихлорохин, кортикостероиды по назначению. Защита от солнца.",
+    "Sarcoidosis": "Консультация пульмонолога. Кортикостероиды при симптоматическом течении.",
+    "Scombroid food poisoning": "Антигистаминные препараты, обильное питьё. Симптомы обычно проходят за 6-12 часов.",
+    "Spontaneous pneumothorax": "СКОРАЯ ПОМОЩЬ НЕМЕДЛЕННО. Дренирование плевральной полости в условиях стационара.",
+    "Spontaneous rib fracture": "Обезболивание, консультация травматолога. Исключить патологические причины (остеопороз, метастазы).",
+    "Stable angina": "Нитраты при приступе, антиагреганты, бета-блокаторы. Наблюдение кардиолога.",
+    "Tuberculosis": "СРОЧНАЯ консультация фтизиатра. Длительная противотуберкулёзная терапия (минимум 6 месяцев).",
+    "URTI": "Покой, тёплое питьё, промывание носа, жаропонижающее при необходимости.",
+    "Unstable angina": "СКОРАЯ ПОМОЩЬ НЕМЕДЛЕННО. Аспирин, нитроглицерин. Требует срочной госпитализации.",
+    "Viral pharyngitis": "Полоскание горла, тёплое питьё, жаропонижающее при необходимости.",
+    "Whooping cough": "Антибиотики (азитромицин) на ранних стадиях. Изоляция пациента. Консультация врача обязательна.",
 }
 
 disease_labels = {
-    "Gastroenteritis": "Гастроэнтерит (Кишечная инфекция)",
-    "Croup": "Круп (Острый ларинготрахеит)",
-    "Scarlet Fever": "Скарлатина",
-    "Eczema": "Экзема / Дерматит",
-    "Asthma": "Бронхиальная астма",
-    "Type 1 Diabetes": "Сахарный диабет 1 типа (Подозрение)",
+    "Acute COPD exacerbation / infection": "Обострение ХОБЛ / инфекция",
+    "Acute dystonic reactions": "Острые дистонические реакции",
+    "Acute laryngitis": "Острый ларингит",
+    "Acute otitis media": "Острый средний отит",
+    "Acute pulmonary edema": "Острый отёк лёгких",
+    "Acute rhinosinusitis": "Острый риносинусит",
+    "Allergic sinusitis": "Аллергический синусит",
+    "Anaphylaxis": "Анафилаксия",
+    "Anemia": "Анемия",
+    "Atrial fibrillation": "Мерцательная аритмия",
+    "Boerhaave": "Синдром Бурхаве (разрыв пищевода)",
+    "Bronchiectasis": "Бронхоэктатическая болезнь",
     "Bronchiolitis": "Бронхиолит",
-    "Meningitis": "Менингит",
+    "Bronchitis": "Бронхит",
+    "Bronchospasm / acute asthma exacerbation": "Бронхоспазм / Обострение астмы",
+    "Chagas": "Болезнь Шагаса",
+    "Chronic rhinosinusitis": "Хронический риносинусит",
+    "Cluster headache": "Кластерная головная боль",
+    "Croup": "Круп (Острый ларинготрахеит)",
+    "Ebola": "Лихорадка Эбола",
+    "Epiglottitis": "Эпиглоттит",
+    "GERD": "ГЭРБ (Гастроэзофагеальный рефлюкс)",
+    "Guillain-Barré syndrome": "Синдром Гийена-Барре",
+    "HIV (initial infection)": "ВИЧ (первичная инфекция)",
     "Influenza": "Грипп / ОРВИ",
+    "Inguinal hernia": "Паховая грыжа",
+    "Larygospasm": "Ларингоспазм",
+    "Localized edema": "Локализованный отёк",
+    "Myasthenia gravis": "Миастения гравис",
+    "Myocarditis": "Миокардит",
+    "PSVT": "Пароксизмальная суправентрикулярная тахикардия",
+    "Pancreatic neoplasm": "Новообразование поджелудочной железы",
+    "Panic attack": "Паническая атака",
+    "Pericarditis": "Перикардит",
     "Pneumonia": "Пневмония",
-    "Chickenpox": "Ветрянка",
-    "Appendicitis": "Аппендицит",
-    "Common Cold": "Простуда (ОРЗ)"
+    "Possible NSTEMI / STEMI": "Возможный инфаркт миокарда (НСТМИ/СТМИ)",
+    "Pulmonary embolism": "Тромбоэмболия лёгочной артерии (ТЭЛА)",
+    "Pulmonary neoplasm": "Новообразование лёгкого",
+    "SLE": "Системная красная волчанка",
+    "Sarcoidosis": "Саркоидоз",
+    "Scombroid food poisoning": "Скомброидное пищевое отравление",
+    "Spontaneous pneumothorax": "Спонтанный пневмоторакс",
+    "Spontaneous rib fracture": "Спонтанный перелом ребра",
+    "Stable angina": "Стабильная стенокардия",
+    "Tuberculosis": "Туберкулёз",
+    "URTI": "ОРВИ (инфекция верхних дыхательных путей)",
+    "Unstable angina": "Нестабильная стенокардия",
+    "Viral pharyngitis": "Вирусный фарингит",
+    "Whooping cough": "Коклюш",
 }
 
 disease_doctors = {
-    "Gastroenteritis": "Гастроэнтеролог / Инфекционист",
-    "Croup": "Педиатр / Скорая (если задыхается)",
-    "Scarlet Fever": "Инфекционист / Педиатр",
-    "Eczema": "Дерматолог",
-    "Asthma": "Пульмонолог / Аллерголог",
-    "Type 1 Diabetes": "Эндокринолог (Срочно)",
+    "Acute COPD exacerbation / infection": "Пульмонолог / Терапевт",
+    "Acute dystonic reactions": "Невролог / Скорая помощь",
+    "Acute laryngitis": "ЛОР-врач",
+    "Acute otitis media": "ЛОР-врач / Педиатр",
+    "Acute pulmonary edema": "СКОРАЯ ПОМОЩЬ (103)",
+    "Acute rhinosinusitis": "ЛОР-врач",
+    "Allergic sinusitis": "Аллерголог / ЛОР-врач",
+    "Anaphylaxis": "СКОРАЯ ПОМОЩЬ (103)",
+    "Anemia": "Гематолог / Терапевт",
+    "Atrial fibrillation": "Кардиолог",
+    "Boerhaave": "СКОРАЯ ПОМОЩЬ (103) / Хирург",
+    "Bronchiectasis": "Пульмонолог",
     "Bronchiolitis": "Педиатр / Пульмонолог",
-    "Meningitis": "СКОРАЯ ПОМОЩЬ (103) / Невролог",
-    "Influenza": "Терапевт",
+    "Bronchitis": "Терапевт / Педиатр",
+    "Bronchospasm / acute asthma exacerbation": "Аллерголог / СКОРАЯ при тяжёлом приступе",
+    "Chagas": "Инфекционист",
+    "Chronic rhinosinusitis": "ЛОР-врач",
+    "Cluster headache": "Невролог",
+    "Croup": "Педиатр / СКОРАЯ (если задыхается)",
+    "Ebola": "СКОРАЯ ПОМОЩЬ (103) / Инфекционист",
+    "Epiglottitis": "СКОРАЯ ПОМОЩЬ (103) / ЛОР-врач",
+    "GERD": "Гастроэнтеролог",
+    "Guillain-Barré syndrome": "Невролог / СКОРАЯ ПОМОЩЬ",
+    "HIV (initial infection)": "Инфекционист",
+    "Influenza": "Терапевт / Педиатр",
+    "Inguinal hernia": "Хирург",
+    "Larygospasm": "ЛОР-врач",
+    "Localized edema": "Терапевт / Хирург",
+    "Myasthenia gravis": "Невролог",
+    "Myocarditis": "Кардиолог / СКОРАЯ ПОМОЩЬ",
+    "PSVT": "Кардиолог",
+    "Pancreatic neoplasm": "Онколог / Гастроэнтеролог",
+    "Panic attack": "Психиатр / Психолог",
+    "Pericarditis": "Кардиолог",
     "Pneumonia": "Терапевт / Пульмонолог",
-    "Chickenpox": "Терапевт (вызов на дом)",
-    "Appendicitis": "СКОРАЯ ПОМОЩЬ (Хирургия)",
-    "Common Cold": "Терапевт"
+    "Possible NSTEMI / STEMI": "СКОРАЯ ПОМОЩЬ (103)",
+    "Pulmonary embolism": "СКОРАЯ ПОМОЩЬ (103)",
+    "Pulmonary neoplasm": "Онколог / Пульмонолог",
+    "SLE": "Ревматолог",
+    "Sarcoidosis": "Пульмонолог / Ревматолог",
+    "Scombroid food poisoning": "Терапевт / Аллерголог",
+    "Spontaneous pneumothorax": "СКОРАЯ ПОМОЩЬ (103) / Хирург",
+    "Spontaneous rib fracture": "Травматолог",
+    "Stable angina": "Кардиолог",
+    "Tuberculosis": "Фтизиатр",
+    "URTI": "Терапевт / Педиатр",
+    "Unstable angina": "СКОРАЯ ПОМОЩЬ (103) / Кардиолог",
+    "Viral pharyngitis": "Терапевт / ЛОР-врач",
+    "Whooping cough": "Инфекционист / Педиатр",
 }
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
@@ -431,7 +531,7 @@ def last_day(patient_id: int) -> Optional[int]:
 
 def insert_disease(
     patient_id: int,
-    symptoms_23: List[int],
+    evidences: List[str],
     disease_predict: str,
     score: float,
     disease_setup: Optional[str] = None,
@@ -440,9 +540,6 @@ def insert_disease(
     patient_explanation: Optional[str] = None,
     doctor_explanation: Optional[str] = None
 ) -> int:
-
-    if len(symptoms_23) != len(symptom_list):
-        raise ValueError(f"symptoms_23 должен быть длиной {len(symptom_list)}")
 
     if recept is None:
         recept = disease_recommendations.get(
@@ -479,15 +576,14 @@ def insert_disease(
 
         day_id = cur.fetchone()[0]
 
-        rows = [
-            (day_id, symptom_list[i], int(symptoms_23[i]))
-            for i in range(len(symptom_list))
-        ]
-
-        cur.executemany("""
-            INSERT INTO diary_symptoms(day_id, symptom_code, value)
-            VALUES (%s,%s,%s)
-        """, rows)
+        # Store each evidence token as a symptom row (value=1 means present)
+        if evidences:
+            rows = [(day_id, ev, 1) for ev in evidences]
+            cur.executemany("""
+                INSERT INTO diary_symptoms(day_id, symptom_code, value)
+                VALUES (%s,%s,%s)
+                ON CONFLICT (day_id, symptom_code) DO NOTHING
+            """, rows)
 
         conn.commit()
         return day_id
@@ -631,31 +727,19 @@ def get_symptom_graph(patient_id: int, symptom_code: str) -> List[Dict[str, Any]
     finally:
         conn.close()
 
-def model_predict(symptoms):
-    score_dict = dict()
-    if not len(symptoms) > len(model_dict["Croup"][0]):
-        symptoms = symptoms[:len(model_dict["Croup"][0])]
-    for dis,model in model_dict.items():
-        f = model[1]
-        f_max = model[1]
-        relevant = 0
-        matched = 0
-        for i in range(len(symptoms)):
-            f += model[0][i] * symptoms[i]
-            f_max += model[0][i] * 3
-            #if model[0][i] > 0:
-                #relevant += 1
-                #if symptoms[i] > 0:
-                    #matched += 1
-        score = f / f_max
-        #if relevant > 0 and matched == 0:
-            #score *= 0.1
-        score_dict[dis] = score
-    pre_diagnose = sorted(score_dict.items(),key = lambda x: x[1] ,reverse = True)[:3]
-    return pre_diagnose
+# model_predict() removed — use sklearn_predict() from ml_model.py
 
-RED_ZONE_DISEASES = {"Meningitis", "Appendicitis", "Type 1 Diabetes"}
-YELLOW_ZONE_DISEASES = {"Pneumonia", "Scarlet Fever", "Influenza"}
+RED_ZONE_DISEASES = {
+    "Anaphylaxis", "Boerhaave", "Ebola", "Epiglottitis",
+    "Acute pulmonary edema", "Possible NSTEMI / STEMI", "Pulmonary embolism",
+    "Spontaneous pneumothorax", "Unstable angina",
+}
+YELLOW_ZONE_DISEASES = {
+    "Atrial fibrillation", "Bronchospasm / acute asthma exacerbation",
+    "Guillain-Barré syndrome", "HIV (initial infection)", "Myocarditis",
+    "Pancreatic neoplasm", "PSVT", "Pneumonia", "Pulmonary neoplasm",
+    "Stable angina", "Tuberculosis",
+}
 
 def classify_zone(disease: str, score: float) -> str:
     if disease in RED_ZONE_DISEASES or score > 0.6:
@@ -815,36 +899,36 @@ async def get_symptoms_endpoint(body: SymptomsRequest, user: dict = Depends(requ
 async def analys_endpoint(body: AnalysRequest, user: dict = Depends(require_patient)):
     patient_id = user["patient_id"]
 
-    top3 = model_predict(body.symptoms)
-    top1_name = top3[0][0]
-    top1_score = top3[0][1]
-    score = (top3[0][1]+top3[1][1]+top3[2][1])/3
-    preliminary_diagnose = top3[0][0] + " " + top3[1][0] + " " + top3[2][0]
-    if top1_score < 0.32 and body.diagnose_setup == "Nothing":
+    top3 = sklearn_predict(body.evidences, age=body.age, sex=body.sex, top_n=3)
+    top1_name, top1_score = top3[0]
+
+    preliminary_diagnose = " ".join(name for name, _ in top3)
+    if top1_score < 0.30 and body.diagnose_setup == "Nothing":
         preliminary_diagnose = "Nothing"
 
-    recept = disease_recommendations.get(top1_name, "Nothing")
-    day = insert_disease(patient_id, body.symptoms, preliminary_diagnose, score, body.diagnose_setup, None, recept)
+    avg_score = sum(sc for _, sc in top3) / len(top3)
+    day = insert_disease(
+        patient_id,
+        body.evidences,
+        preliminary_diagnose,
+        avg_score,
+        body.diagnose_setup,
+    )
 
-    # Build top-3 slices with labels and scores
-    slices = []
-    for name, sc in top3:
-        slices.append({
-            "name": name,
-            "label": disease_labels.get(name, name),
-            "score": sc,
-        })
+    slices = [
+        {"name": name, "label": disease_labels.get(name, name), "score": sc}
+        for name, sc in top3
+    ]
 
-    # If top1 confidence is too low, return "Unknown"
-    if top1_score < 0.32:
+    if top1_score < 0.30:
         return {
             "day": day,
             "diseaseName": "Unknown",
             "diseaseLabel": "Не удалось определить",
             "doctor": "Терапевт",
-            "recommendation": "Симптомы не специфичны или недостаточно данных. Пожалуйста, опишите состояние подробнее.",
+            "recommendation": "Симптомов недостаточно для определения диагноза. Опишите состояние подробнее.",
             "slices": [],
-            "score": score,
+            "score": avg_score,
         }
 
     return {
@@ -856,6 +940,73 @@ async def analys_endpoint(body: AnalysRequest, user: dict = Depends(require_pati
         "slices": slices,
         "score": top1_score,
     }
+
+
+@app.post("/extract_symptoms")
+@limiter.limit("20/minute")
+async def extract_symptoms_endpoint(
+    request: Request,
+    body: ExtractSymptomsRequest,
+    user: dict = Depends(require_patient),
+):
+    """
+    NLP endpoint: sends patient's free-text description to LLaMA,
+    returns structured DDXPlus evidence IDs for use with /analys.
+    """
+    groq_key = os.environ.get("GROQ_API_KEY", "")
+    if not groq_key:
+        raise HTTPException(status_code=500, detail="GROQ_API_KEY not configured on server")
+
+    import httpx
+
+    chat_model = os.environ.get("GROQ_CHAT_MODEL", "llama3-70b-8192")
+    system_prompt = build_extraction_prompt()
+
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.post(
+                "https://api.groq.com/openai/v1/chat/completions",
+                headers={"Authorization": f"Bearer {groq_key}", "Content-Type": "application/json"},
+                json={
+                    "model": chat_model,
+                    "messages": [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": body.text},
+                    ],
+                    "temperature": 0,
+                    "max_tokens": 1024,
+                },
+            )
+            resp.raise_for_status()
+    except httpx.HTTPStatusError as e:
+        logger.error("Groq chat API error: %s %s", e.response.status_code, e.response.text)
+        raise HTTPException(status_code=502, detail="AI service error")
+    except Exception as e:
+        logger.error("Groq chat request failed: %s", e)
+        raise HTTPException(status_code=502, detail="AI service unavailable")
+
+    content = resp.json().get("choices", [{}])[0].get("message", {}).get("content", "")
+
+    # Strip markdown code fences if present
+    if content.startswith("```"):
+        content = content.split("\n", 1)[-1]
+        if content.endswith("```"):
+            content = content[:-3]
+        content = content.strip()
+
+    try:
+        parsed = json.loads(content)
+    except json.JSONDecodeError:
+        logger.error("LLaMA returned non-JSON: %s", content[:200])
+        raise HTTPException(status_code=502, detail="AI returned invalid JSON")
+
+    evidences = parsed.get("evidences", [])
+    age = parsed.get("age") or 25
+    sex = parsed.get("sex") or "M"
+    if sex not in ("M", "F"):
+        sex = "M"
+
+    return {"evidences": evidences, "age": age, "sex": sex}
 
 @app.post("/save_explanation")
 async def save_explanation_endpoint(body: SaveExplanationRequest, user: dict = Depends(require_patient)):

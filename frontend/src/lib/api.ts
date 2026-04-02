@@ -139,13 +139,46 @@ export async function loginPatient(
   return data;
 }
 
+export interface ExtractSymptomsResponse {
+  evidences: string[];
+  age: number;
+  sex: string;
+  noSymptoms?: boolean;
+  error?: string;
+}
+
+export async function extractSymptoms(text: string): Promise<ExtractSymptomsResponse> {
+  try {
+    const { data } = await api.post<{ evidences: string[]; age: number; sex: string }>(
+      "/extract_symptoms",
+      { text }
+    );
+    if (!data.evidences || data.evidences.length === 0) {
+      return { evidences: [], age: 25, sex: "M", noSymptoms: true };
+    }
+    return { evidences: data.evidences, age: data.age ?? 25, sex: data.sex ?? "M" };
+  } catch (err: unknown) {
+    const status = (err as { response?: { status?: number } })?.response?.status;
+    return {
+      evidences: [],
+      age: 25,
+      sex: "M",
+      error: status ? `AI Service Error: ${status}` : "Network error",
+    };
+  }
+}
+
 export async function sendAnalysis(
   _patientId: number,
-  symptoms: number[],
+  evidences: string[],
+  age: number,
+  sex: string,
   diagnoseSetup: string
 ): Promise<AnalysResponse> {
   const { data } = await api.post<AnalysResponse>("/analys", {
-    symptoms,
+    evidences,
+    age,
+    sex,
     diagnose_setup: diagnoseSetup,
   });
   return data;
