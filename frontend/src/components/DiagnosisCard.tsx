@@ -20,17 +20,15 @@ interface DiagnosisCardProps {
   lang?: Lang;
 }
 
-function getUrgencyLevel(diseaseName: string): "low" | "medium" | "high" {
-  const high = ["Meningitis", "Appendicitis", "Type 1 Diabetes", "Myocardial Infarction"];
-  const medium = ["Pneumonia", "Scarlet Fever", "Influenza"];
-  if (high.includes(diseaseName)) return "high";
-  if (medium.includes(diseaseName)) return "medium";
+function zoneToUrgency(zone?: "red" | "yellow" | "green"): "low" | "medium" | "high" {
+  if (zone === "red") return "high";
+  if (zone === "yellow") return "medium";
   return "low";
 }
 
 export function DiagnosisCard({ diagnosis, lang }: DiagnosisCardProps) {
   const l = lang || getLang();
-  const urgency = getUrgencyLevel(diagnosis.diseaseName);
+  const urgency = zoneToUrgency(diagnosis.zone);
 
   const urgencyConfig = {
     low: {

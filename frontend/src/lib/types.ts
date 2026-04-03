@@ -28,4 +28,5 @@ export interface DiagnosisResult {
   patientExplanation?: string;
   doctorExplanation?: string;
   labInfluences?: LabInfluence[];
+  zone?: "red" | "yellow" | "green";
 }

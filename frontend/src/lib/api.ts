@@ -74,6 +74,7 @@ export interface AnalysResponse {
   recommendation: string;
   slices: AnalysSlice[];
   score: number;
+  zone: "red" | "yellow" | "green";
 }
 
 export interface HistoryEntry {
@@ -180,6 +181,34 @@ export async function sendAnalysis(
     age,
     sex,
     diagnose_setup: diagnoseSetup,
+  });
+  return data;
+}
+
+export interface ClarifyingQuestion {
+  evidence_id: string;
+  question_en: string;
+  question_ru: string;
+  question_kk: string;
+  score: number;
+}
+
+export interface NextQuestionsResponse {
+  questions: ClarifyingQuestion[];
+  current_top3: { disease: string; label: string; score: number }[];
+}
+
+export async function getNextQuestions(
+  evidences: string[],
+  age: number,
+  sex: string,
+  n: number = 3
+): Promise<NextQuestionsResponse> {
+  const { data } = await api.post<NextQuestionsResponse>("/next_questions", {
+    evidences,
+    age,
+    sex,
+    n,
   });
   return data;
 }

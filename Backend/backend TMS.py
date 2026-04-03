@@ -29,7 +29,7 @@ from auth import (
     require_patient_or_doctor,
 )
 from crypto_utils import encrypt_field, decrypt_field
-from ml_model import sklearn_predict, build_extraction_prompt
+from ml_model import sklearn_predict, build_extraction_prompt, validate_evidences, find_discriminative_evidences
 
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
@@ -107,6 +107,12 @@ class AnalysRequest(BaseModel):
 
 class ExtractSymptomsRequest(BaseModel):
     text: str = Field(..., min_length=3, max_length=2000)
+
+class NextQuestionsRequest(BaseModel):
+    evidences: List[str] = Field(..., min_length=1, max_length=300)
+    age: int = Field(default=25, ge=0, le=120)
+    sex: str = Field(default="M", pattern="^[MF]$")
+    n: int = Field(default=3, ge=1, le=5)
 
 class SaveExplanationRequest(BaseModel):
     day_id: int = Field(..., gt=0)
@@ -931,6 +937,8 @@ async def analys_endpoint(body: AnalysRequest, user: dict = Depends(require_pati
         for name, sc in top3
     ]
 
+    zone = classify_zone(top1_name, top1_score)
+
     return {
         "day": day,
         "diseaseName": top1_name,
@@ -939,6 +947,7 @@ async def analys_endpoint(body: AnalysRequest, user: dict = Depends(require_pati
         "recommendation": disease_recommendations.get(top1_name, "Консультация врача обязательна."),
         "slices": slices,
         "score": top1_score,
+        "zone": zone,
     }
 
 
@@ -1007,7 +1016,40 @@ async def extract_symptoms_endpoint(
         sex = "M"
 
     logger.info("extract_symptoms: text=%r -> evidences=%s age=%s sex=%s", body.text[:80], evidences, age, sex)
-    return {"evidences": evidences, "age": age, "sex": sex, "noSymptoms": len(evidences) == 0}
+    valid_evidences, invalid = validate_evidences(evidences)
+    if invalid:
+        logger.warning("extract_symptoms: filtered %d invalid tokens: %s", len(invalid), invalid)
+
+    return {"evidences": valid_evidences, "age": age, "sex": sex, "noSymptoms": len(valid_evidences) == 0}
+
+
+@app.post("/next_questions")
+@limiter.limit("30/minute")
+async def next_questions_endpoint(
+    request: Request,  # noqa: used by slowapi limiter
+    body: NextQuestionsRequest,
+    _user: dict = Depends(require_patient),
+):
+    """
+    Returns the N most discriminative yes/no questions to ask next,
+    based on current evidences. Questions are chosen by information gain
+    between the current top-3 candidate diseases.
+    """
+    questions = find_discriminative_evidences(
+        body.evidences,
+        age=body.age,
+        sex=body.sex,
+        top_n=body.n,
+    )
+    top3 = sklearn_predict(body.evidences, age=body.age, sex=body.sex, top_n=3)
+    return {
+        "questions": questions,
+        "current_top3": [
+            {"disease": name, "label": disease_labels.get(name, name), "score": round(sc, 3)}
+            for name, sc in top3
+        ],
+    }
+
 
 @app.post("/save_explanation")
 async def save_explanation_endpoint(body: SaveExplanationRequest, user: dict = Depends(require_patient)):

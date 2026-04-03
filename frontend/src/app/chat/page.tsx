@@ -16,7 +16,7 @@ import { ChatMessage } from "@/components/ChatMessage";
 import { DiagnosisCard } from "@/components/DiagnosisCard";
 import { DiagnosisSkeleton } from "@/components/DiagnosisSkeleton";
 import { generateExplanation } from "@/app/actions/generateExplanation";
-import { extractSymptoms, sendAnalysis, saveExplanation, getHistory, logout as apiLogout, type HistoryEntry } from "@/lib/api";
+import { extractSymptoms, sendAnalysis, saveExplanation, getHistory, getNextQuestions, logout as apiLogout, type HistoryEntry, type ClarifyingQuestion } from "@/lib/api";
 import { getDiseaseLabel } from "@/lib/diseaseWeights";
 import type { DiagnosisResult } from "@/lib/types";
 import { t, getLang, setLang, type Lang } from "@/lib/i18n";
@@ -88,6 +88,13 @@ export default function ChatPage() {
   const [historyLoading, setHistoryLoading] = useState(false);
   const [cooldown, setCooldown] = useState(0);
   const [lang, setLangState] = useState<Lang>("ru");
+
+  // Clarifying questions state
+  const [pendingEvidences, setPendingEvidences] = useState<string[]>([]);
+  const [pendingAge, setPendingAge] = useState<number>(25);
+  const [pendingSex, setPendingSex] = useState<string>("M");
+  const [clarifyingQuestions, setClarifyingQuestions] = useState<ClarifyingQuestion[]>([]);
+  const [answeredEvidences, setAnsweredEvidences] = useState<string[]>([]);
 
   useEffect(() => {
     const id = localStorage.getItem("patient_id");
@@ -189,7 +196,35 @@ export default function ChatPage() {
         return;
       }
 
-      // Step 2: Send evidences to sklearn model on backend for prediction + storage
+      // Step 2: Get clarifying questions (max 3, chosen by information gain)
+      const nextQResult = await getNextQuestions(evidences, age, sex, 3).catch(() => null);
+      if (nextQResult && nextQResult.questions.length > 0) {
+        setPendingEvidences(evidences);
+        setPendingAge(age);
+        setPendingSex(sex);
+        setAnsweredEvidences([]);
+        setClarifyingQuestions(nextQResult.questions);
+
+        const questionLabel = lang === "en"
+          ? "To refine the diagnosis, please answer a few questions:"
+          : lang === "kk"
+          ? "Диагнозды нақтылау үшін бірнеше сұраққа жауап беріңіз:"
+          : "Для уточнения диагноза ответьте на несколько вопросов:";
+
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: Date.now().toString(),
+            role: "assistant",
+            content: questionLabel,
+            timestamp: getTime(),
+          },
+        ]);
+        setIsLoading(false);
+        return;
+      }
+
+      // Step 3: Send evidences to sklearn model on backend for prediction + storage
       const analysisResult = await sendAnalysis(patientId, evidences, age, sex, "Nothing").catch(() => null);
 
       // Build DiagnosisResult from backend response
@@ -203,6 +238,7 @@ export default function ChatPage() {
               ...s,
               label: getDiseaseLabel(s.name, lang),
             })),
+            zone: analysisResult.zone,
           }
         : {
             diseaseName: "Unknown",
@@ -210,6 +246,7 @@ export default function ChatPage() {
             doctor: lang === "en" ? "General Practitioner" : "Терапевт",
             recommendation: t("errorDiagnosis", lang),
             slices: [],
+            zone: "green",
           };
 
       // Build symptom count label for display
@@ -267,6 +304,86 @@ export default function ChatPage() {
     } finally {
       setIsLoading(false);
       setCooldown(3);
+    }
+  };
+
+  const finalizeDiagnosis = async (evidences: string[], age: number, sex: string) => {
+    setIsLoading(true);
+    setClarifyingQuestions([]);
+    try {
+      const analysisResult = await sendAnalysis(patientId!, evidences, age, sex, "Nothing").catch(() => null);
+      const diagnosis: DiagnosisResult = analysisResult
+        ? {
+            diseaseName: analysisResult.diseaseName,
+            diseaseLabel: getDiseaseLabel(analysisResult.diseaseName, lang),
+            doctor: analysisResult.doctor,
+            recommendation: analysisResult.recommendation,
+            slices: analysisResult.slices.map((s) => ({ ...s, label: getDiseaseLabel(s.name, lang) })),
+            zone: analysisResult.zone,
+          }
+        : {
+            diseaseName: "Unknown",
+            diseaseLabel: lang === "en" ? "Could not determine" : lang === "kk" ? "Анықтау мүмкін болмады" : "Не удалось определить",
+            doctor: lang === "en" ? "General Practitioner" : "Терапевт",
+            recommendation: t("errorDiagnosis", lang),
+            slices: [],
+            zone: "green" as const,
+          };
+
+      const symptomCount = lang === "en"
+        ? `${evidences.length} symptoms detected`
+        : lang === "kk" ? `${evidences.length} белгі анықталды`
+        : `Обнаружено признаков: ${evidences.length}`;
+
+      const topDiseases = diagnosis.slices.map((s) => ({ name: s.name, label: s.label, score: s.score }));
+      const { patientExplanation, doctorExplanation } = await generateExplanation(
+        "", evidences, diagnosis.diseaseName, diagnosis.diseaseLabel, topDiseases, undefined, lang,
+      );
+      diagnosis.patientExplanation = patientExplanation;
+      diagnosis.doctorExplanation = doctorExplanation;
+
+      if (analysisResult?.day) {
+        saveExplanation(analysisResult.day, patientExplanation, doctorExplanation).catch(() => {});
+      }
+
+      setMessages((prev) => [...prev, {
+        id: Date.now().toString(),
+        role: "assistant",
+        content: `${t("detectedSymptoms", lang)}: ${symptomCount}`,
+        timestamp: getTime(),
+        diagnosis,
+      }]);
+    } finally {
+      setIsLoading(false);
+      setCooldown(3);
+      setPendingEvidences([]);
+    }
+  };
+
+  const handleClarifyAnswer = async (question: ClarifyingQuestion, answered: boolean) => {
+    const yesLabel = lang === "en" ? "Yes" : lang === "kk" ? "Иә" : "Да";
+    const noLabel = lang === "en" ? "No" : lang === "kk" ? "Жоқ" : "Нет";
+    const questionText = lang === "en" ? question.question_en : lang === "kk" ? question.question_kk : question.question_ru;
+
+    setMessages((prev) => [...prev, {
+      id: Date.now().toString(),
+      role: "user",
+      content: `${questionText} — ${answered ? yesLabel : noLabel}`,
+      timestamp: getTime(),
+    }]);
+
+    const newAnswered = answered
+      ? [...answeredEvidences, question.evidence_id]
+      : answeredEvidences;
+
+    const remaining = clarifyingQuestions.filter((q) => q.evidence_id !== question.evidence_id);
+    setAnsweredEvidences(newAnswered);
+    setClarifyingQuestions(remaining);
+
+    if (remaining.length === 0) {
+      // All questions answered — finalize
+      const allEvidences = [...pendingEvidences, ...newAnswered];
+      await finalizeDiagnosis(allEvidences, pendingAge, pendingSex);
     }
   };
 
@@ -421,6 +538,37 @@ export default function ChatPage() {
             )}
           </div>
         ))}
+        {clarifyingQuestions.length > 0 && (
+          <div className="flex flex-col gap-3 ml-11">
+            {clarifyingQuestions.map((q) => {
+              const qText = lang === "en" ? q.question_en : lang === "kk" ? q.question_kk : q.question_ru;
+              const yesLabel = lang === "en" ? "Yes" : lang === "kk" ? "Иә" : "Да";
+              const noLabel = lang === "en" ? "No" : lang === "kk" ? "Жоқ" : "Нет";
+              return (
+                <div key={q.evidence_id} className="bg-white border border-blue-100 rounded-xl p-3 shadow-sm">
+                  <p className="text-sm text-gray-800 mb-2">{qText}</p>
+                  <div className="flex gap-2">
+                    <Button
+                      size="sm"
+                      className="bg-blue-600 hover:bg-blue-700 text-white px-4"
+                      onClick={() => handleClarifyAnswer(q, true)}
+                    >
+                      {yesLabel}
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="border-gray-300 text-gray-600 px-4"
+                      onClick={() => handleClarifyAnswer(q, false)}
+                    >
+                      {noLabel}
+                    </Button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
         {isLoading && <DiagnosisSkeleton lang={lang} />}
         <div ref={messagesEndRef} />
       </div>

@@ -111,6 +111,114 @@ def sklearn_predict(
     return [(LABEL_CLASSES[i], float(proba[i])) for i in top_indices]
 
 
+def validate_evidences(evidences: List[str]) -> Tuple[List[str], List[str]]:
+    """
+    Filter evidence list to only valid feature tokens.
+    Returns (valid, invalid).
+    """
+    valid = [e for e in evidences if e in _feat_idx]
+    invalid = [e for e in evidences if e not in _feat_idx]
+    return valid, invalid
+
+
+def find_discriminative_evidences(
+    evidences: List[str],
+    age: int = 25,
+    sex: str = "M",
+    top_n: int = 3,
+) -> List[dict]:
+    """
+    Find the top_n most discriminative binary evidences to ask about next.
+    Uses probability-shift method: for each candidate evidence, compute how much
+    setting it to 1 would shift the top-3 disease probabilities.
+    Returns list of {evidence_id, question_en, question_ru, question_kk, score}.
+    """
+    if _clf is None or N_FEATURES == 0:
+        return []
+
+    base_vec = build_feature_vector(evidences, age, sex)
+    base_proba = _clf.predict_proba(base_vec.reshape(1, -1))[0]
+    top3_idx = np.argsort(base_proba)[::-1][:3]
+
+    # Only consider binary evidences not yet known
+    candidates = [
+        ev_id for ev_id, meta in EVIDENCES_META.items()
+        if meta.get("data_type") == "B"
+        and ev_id not in evidences
+        and ev_id in _feat_idx
+        and not meta.get("is_antecedent", False)  # skip history/family questions
+    ]
+
+    if not candidates:
+        return []
+
+    # Batch predict: one row per candidate with that feature set to 1
+    batch = np.tile(base_vec, (len(candidates), 1))
+    for i, ev_id in enumerate(candidates):
+        batch[i, _feat_idx[ev_id]] = 1.0
+
+    probas = _clf.predict_proba(batch)  # (n_candidates, n_classes)
+
+    base_top3 = base_proba[top3_idx]
+    scores = []
+    for i, ev_id in enumerate(candidates):
+        shift = float(np.max(np.abs(probas[i][top3_idx] - base_top3)))
+        scores.append((ev_id, shift))
+
+    scores.sort(key=lambda x: x[1], reverse=True)
+
+    result = []
+    for ev_id, score in scores[:top_n]:
+        meta = EVIDENCES_META.get(ev_id, {})
+        q_en = meta.get("question_en", ev_id)
+        result.append({
+            "evidence_id": ev_id,
+            "question_en": q_en,
+            "question_ru": _QUESTION_TRANSLATIONS.get(ev_id, {}).get("ru", q_en),
+            "question_kk": _QUESTION_TRANSLATIONS.get(ev_id, {}).get("kk", q_en),
+            "score": score,
+        })
+
+    return result
+
+
+# ─── Manual translations for the most common diagnostic questions ───
+# Covers the ~60 most frequently selected discriminative evidences
+_QUESTION_TRANSLATIONS: dict = {
+    "E_91": {"ru": "У вас есть температура (ощущение жара или измеренная термометром)?", "kk": "Сізде қызба бар ма (қыздырып тұру немесе термометрмен өлшенген)?"},
+    "E_94": {"ru": "У вас был озноб или дрожь?", "kk": "Сізде қалтырау немесе дірілдеу болды ма?"},
+    "E_97": {"ru": "У вас болит горло?", "kk": "Сіздің тамағыңыз ауырады ма?"},
+    "E_201": {"ru": "У вас есть кашель?", "kk": "Сізде жөтел бар ма?"},
+    "E_181": {"ru": "У вас заложен нос или прозрачные выделения из носа?", "kk": "Сіздің мұрныңыз бітелген немесе мөлдір бөліндіге бар ма?"},
+    "E_66": {"ru": "У вас значительная одышка или затруднение дыхания?", "kk": "Сізде айтарлықтай ентігу немесе дем алу қиындығы бар ма?"},
+    "E_14": {"ru": "У вас есть боль в груди даже в состоянии покоя?", "kk": "Сізде тыныштық жағдайда да кеуде ауруы бар ма?"},
+    "E_53": {"ru": "У вас есть боль, связанная с причиной вашего обращения?", "kk": "Сіздің шағымыңызбен байланысты ауырсыну бар ма?"},
+    "E_57": {"ru": "Боль распространяется в другое место (например, в руку, шею, челюсть)?", "kk": "Ауырсыну басқа жерге (мысалы, қолға, мойынға, жаққа) тарайды ма?"},
+    "E_50": {"ru": "У вас значительно усилилось потоотделение?", "kk": "Сізде тер шығару айтарлықтай күшейді ме?"},
+    "E_155": {"ru": "Вы чувствуете сильное сердцебиение или перебои в работе сердца?", "kk": "Сіз жүрек соғысының жылдамдауын немесе үзілісін сезесіз бе?"},
+    "E_148": {"ru": "Вас тошнит или есть ощущение, что вас вырвет?", "kk": "Сізде жүрек айну немесе құсу сезімі бар ма?"},
+    "E_51": {"ru": "У вас диарея или учащённый стул?", "kk": "Сізде диарея немесе жиі нәжіс бар ма?"},
+    "E_89": {"ru": "Вы постоянно чувствуете усталость или у вас нарушен сон?", "kk": "Сіз үнемі шаршауды сезесіз бе немесе ұйқыңыз бұзылды ма?"},
+    "E_88": {"ru": "Вы настолько устали, что не можете вести привычный образ жизни или лежите в постели весь день?", "kk": "Сіз соншалықты шаршадыңыз ба, күнделікті іспен айналыса алмайсыз немесе күні бойы жатасыз?"},
+    "E_175": {"ru": "Вы заметили общую слабость, недомогание или изменение общего самочувствия?", "kk": "Жалпы әлсіздік, нашарлау немесе жалпы жағдайдың өзгеруін байқадыңыз ба?"},
+    "E_144": {"ru": "У вас распространённая боль в мышцах?", "kk": "Сізде кең таралған бұлшықет ауруы бар ма?"},
+    "E_77": {"ru": "У вас кашель с окрашенной или более обильной, чем обычно, мокротой?", "kk": "Сізде түрлі-түсті немесе әдеттегіден көп қақырықпен жөтел бар ма?"},
+    "E_220": {"ru": "Боль усиливается при глубоком вдохе?", "kk": "Терең дем алғанда ауырсыну күшейе ме?"},
+    "E_9": {"ru": "У вас опухшие или болезненные лимфоузлы?", "kk": "Сізде ісінген немесе ауырсынатын лимфа түйіндері бар ма?"},
+    "E_65": {"ru": "Вам трудно глотать или есть дискомфорт при глотании?", "kk": "Сіздің жұтуыңыз қиынға соғады ма немесе жұтқанда ыңғайсыздық бар ма?"},
+    "E_173": {"ru": "У вас есть жжение, которое поднимается из желудка в горло с кисловатым привкусом?", "kk": "Сізде асқазаннан тамаққа қышқыл дәммен бірге жоғары көтерілетін жану сезімі бар ма?"},
+    "E_30": {"ru": "Ваш живот вздут или раздут?", "kk": "Сіздің қарныңыз кеуіп немесе ісіп тұр ма?"},
+    "E_64": {"ru": "Вы задыхаетесь при минимальной физической нагрузке?", "kk": "Ең аз дене жаттығуынан кейін ентігесіз бе?"},
+    "E_129": {"ru": "У вас есть высыпания, покраснение или проблемы с кожей?", "kk": "Сізде бөртпе, қызару немесе тері мәселелері бар ма?"},
+    "E_82": {"ru": "У вас кружится голова или вы чувствуете, что можете упасть в обморок?", "kk": "Сіздің басыңыз айналады ма немесе естен тануға жақын сезінесіз бе?"},
+    "E_164": {"ru": "Вы чувствуете, что ваше сердце бьётся очень нерегулярно или хаотично?", "kk": "Сіздің жүрегіңіз өте тұрақсыз немесе хаотты соғып тұрғанын сезесіз бе?"},
+    "E_124": {"ru": "У вас есть астма или вы когда-либо использовали бронходилататор?", "kk": "Сізде демікпе бар ма немесе бұрын бронходилататор қолдандыңыз ба?"},
+    "E_214": {"ru": "Вы замечаете свистящий звук при выдохе?", "kk": "Ыдырау кезінде ысқырған дыбыс байқайсыз ба?"},
+    "E_211": {"ru": "Вас несколько раз вырвало или были многократные позывы к рвоте?", "kk": "Сіздің бірнеше рет қусы ма немесе бірнеше рет құсуға ынтызарлық болды ма?"},
+    "E_154": {"ru": "Ваша кожа значительно бледнее, чем обычно?", "kk": "Сіздің терінгіз әдеттегіден айтарлықтай бозарып кетті ме?"},
+}
+
+
 _FEW_SHOT_EXAMPLES = '''
 EXAMPLES (study these carefully before extracting):
 
@@ -127,8 +235,28 @@ Output: {"age": 22, "sex": "F", "evidences": ["E_91", "E_53", "E_55_@_V_87", "E_
 Reasoning: E_91=fever, E_53=pain present, E_55_@_V_87=right iliac fossa(lower right abdomen), E_148=nausea
 
 Input: "Chest pain radiating to left arm, sweating, shortness of breath. Male, 55."
-Output: {"age": 55, "sex": "M", "evidences": ["E_14", "E_57", "E_50", "E_66"]}
-Reasoning: E_14=chest pain at rest, E_57=pain radiates, E_50=increased sweating, E_66=shortness of breath
+Output: {"age": 55, "sex": "M", "evidences": ["E_14", "E_57", "E_50", "E_66", "E_53", "E_155"]}
+Reasoning: E_14=chest pain at rest, E_57=pain radiates to another location, E_50=increased sweating, E_66=shortness of breath, E_53=pain present, E_155=palpitations/racing heart
+
+Input: "Сильная боль в груди отдаёт в левую руку, потею, трудно дышать. Мужчина 55 лет."
+Output: {"age": 55, "sex": "M", "evidences": ["E_14", "E_57", "E_50", "E_66", "E_53", "E_155"]}
+Reasoning: E_14=боль в груди в покое, E_57=боль иррадиирует, E_50=потливость, E_66=одышка, E_53=боль есть, E_155=сердцебиение
+
+Input: "Severe difficulty breathing, wheezing sound when exhaling, history of asthma. Female, 30."
+Output: {"age": 30, "sex": "F", "evidences": ["E_66", "E_214", "E_112", "E_124", "E_46"]}
+Reasoning: E_66=shortness of breath, E_214=wheezing on exhale, E_112=noisy breathing, E_124=asthma history, E_46=asthma attacks in past year
+
+Input: "Изжога, жжение от желудка поднимается к горлу, кислый привкус. Мужчина 40 лет."
+Output: {"age": 40, "sex": "M", "evidences": ["E_173", "E_53", "E_55_@_V_197"]}
+Reasoning: E_173=burning from stomach to throat with bitter taste, E_53=pain present, E_55_@_V_197=epigastric pain location
+
+Input: "Сильно болит горло, больно глотать, температура 38.5, увеличены лимфоузлы. 19 лет, женщина."
+Output: {"age": 19, "sex": "F", "evidences": ["E_97", "E_65", "E_91", "E_9"]}
+Reasoning: E_97=sore throat, E_65=difficulty swallowing, E_91=fever, E_9=swollen/painful lymph nodes
+
+Input: "Внезапное сильное сердцебиение, страх, онемение в руках, трудно дышать, всё прошло за 20 минут."
+Output: {"age": null, "sex": null, "evidences": ["E_155", "E_66", "E_82", "E_128"]}
+Reasoning: E_155=racing/palpitations, E_66=shortness of breath, E_82=lightheaded/dizzy/faint, E_128=suffocating episode that resolved
 '''
 
 
