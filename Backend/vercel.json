@@ -2,7 +2,15 @@
   "builds": [
     {
       "src": "main.py",
-      "use": "@vercel/python"
+      "use": "@vercel/python",
+      "config": {
+        "includeFiles": [
+          "training sklearn/model.pkl",
+          "training sklearn/feature_names.json",
+          "training sklearn/label_classes.json",
+          "training sklearn/release_evidences.json"
+        ]
+      }
     }
   ],
   "routes": [
