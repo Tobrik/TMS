@@ -916,8 +916,6 @@ async def analys_endpoint(body: AnalysRequest, user: dict = Depends(require_pati
     top1_name, top1_score = top3[0]
 
     preliminary_diagnose = " ".join(name for name, _ in top3)
-    if top1_score < 0.10 and body.diagnose_setup == "Nothing":
-        preliminary_diagnose = "Nothing"
 
     avg_score = sum(sc for _, sc in top3) / len(top3)
     day = insert_disease(
@@ -932,17 +930,6 @@ async def analys_endpoint(body: AnalysRequest, user: dict = Depends(require_pati
         {"name": name, "label": disease_labels.get(name, name), "score": sc}
         for name, sc in top3
     ]
-
-    if top1_score < 0.10:
-        return {
-            "day": day,
-            "diseaseName": "Unknown",
-            "diseaseLabel": "Не удалось определить",
-            "doctor": "Терапевт",
-            "recommendation": "Симптомов недостаточно для определения диагноза. Опишите состояние подробнее.",
-            "slices": [],
-            "score": avg_score,
-        }
 
     return {
         "day": day,
