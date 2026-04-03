@@ -111,15 +111,44 @@ def sklearn_predict(
     return [(LABEL_CLASSES[i], float(proba[i])) for i in top_indices]
 
 
+_FEW_SHOT_EXAMPLES = '''
+EXAMPLES (study these carefully before extracting):
+
+Input: "I have a fever, runny nose, body aches, headache and have been sick for 2 days. Male, 28."
+Output: {"age": 28, "sex": "M", "evidences": ["E_91", "E_94", "E_181", "E_175", "E_144", "E_53", "E_55_@_V_89"]}
+Reasoning: E_91=fever, E_94=chills/shivers, E_181=runny nose, E_175=general malaise+muscle aches, E_144=diffuse muscle pain, E_53=pain present, E_55_@_V_89=forehead pain(headache)
+
+Input: "У меня болит голова и температура 38, насморк, ломота в теле, болею 2 дня. Мужчина, 28 лет."
+Output: {"age": 28, "sex": "M", "evidences": ["E_91", "E_94", "E_181", "E_175", "E_144", "E_53", "E_55_@_V_89"]}
+Reasoning: E_91=температура/fever, E_94=ломота/chills, E_181=насморк/runny nose, E_175=общее недомогание, E_144=боль в мышцах, E_53=боль есть, E_55_@_V_89=головная боль/forehead
+
+Input: "Сильная боль в правом нижнем животе, тошнота, температура 37.8. Женщина, 22 года."
+Output: {"age": 22, "sex": "F", "evidences": ["E_91", "E_53", "E_55_@_V_87", "E_148"]}
+Reasoning: E_91=fever, E_53=pain present, E_55_@_V_87=right iliac fossa(lower right abdomen), E_148=nausea
+
+Input: "Chest pain radiating to left arm, sweating, shortness of breath. Male, 55."
+Output: {"age": 55, "sex": "M", "evidences": ["E_14", "E_57", "E_50", "E_66"]}
+Reasoning: E_14=chest pain at rest, E_57=pain radiates, E_50=increased sweating, E_66=shortness of breath
+'''
+
+
 def build_extraction_prompt() -> str:
     """
     Build a condensed system prompt listing all evidences for LLaMA NLP extractor.
     Returns prompt string to be used in /extract_symptoms endpoint.
     """
     lines = [
-        "You are a medical symptom extractor. Your task is to analyze a patient's description "
-        "and identify which symptoms and risk factors are present.\n"
-        "Below is the complete list of evidence IDs with their descriptions:\n"
+        "You are a medical symptom extractor for the DDXPlus medical dataset. "
+        "Your task is to map a patient's description to the correct evidence IDs from the list below.\n"
+        "CRITICAL RULES:\n"
+        "- Only use evidence IDs from the list below — do NOT invent IDs\n"
+        "- For pain location (E_55), you MUST use E_55_@_V_XX format with the correct value\n"
+        "- Common symptoms mapping: fever→E_91, chills/body aches→E_94+E_175+E_144, "
+        "runny nose→E_181, cough→E_201, sore throat→E_97, nausea→E_116, fatigue→E_89\n"
+        "- Headache = E_53 + E_55_@_V_89 (forehead) or E_55_@_V_25 (back of head)\n"
+        "- Do NOT include risk factors or history unless explicitly mentioned\n",
+        _FEW_SHOT_EXAMPLES,
+        "\nCOMPLETE EVIDENCE LIST:\n"
     ]
 
     for ev_id, meta in EVIDENCES_META.items():
@@ -141,11 +170,7 @@ def build_extraction_prompt() -> str:
         "\nReturn ONLY a valid JSON object (no markdown, no explanation):\n"
         '{"age": <integer or null>, "sex": "<M or F or null>", '
         '"evidences": ["E_XX", "E_YY_@_V_ZZ", ...]}\n'
-        "Rules:\n"
-        "- Include evidence ID as plain E_XX for binary symptoms that are present\n"
-        "- Include E_XX_@_V_YY for categorical/multi-choice values\n"
-        "- Only include evidences that are clearly mentioned or strongly implied\n"
-        "- Do NOT invent evidences not supported by the text\n"
+        "- Only include evidences clearly present in the patient text\n"
         "- If age/sex not mentioned, use null"
     )
 
