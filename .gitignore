@@ -1,3 +1,2 @@
-*.pkl 
-release_train_patients 
-release_validate_patients 
+release_train_patients
+release_validate_patients

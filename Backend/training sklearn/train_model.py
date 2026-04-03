@@ -117,9 +117,9 @@ X_val, y_val = load_dataset(VALIDATE_CSV)
 # ─── Step 4: Train ───
 print("\nTraining RandomForestClassifier...")
 clf = RandomForestClassifier(
-    n_estimators=200,
-    max_depth=None,
-    min_samples_leaf=2,
+    n_estimators=50,
+    max_depth=25,       # limit depth to reduce model size significantly
+    min_samples_leaf=4,
     n_jobs=-1,          # use all CPU cores
     random_state=42,
     verbose=1,
@@ -128,7 +128,7 @@ clf.fit(X_train, y_train)
 
 # ─── Step 5: Save ───
 print("Saving model and metadata...")
-joblib.dump(clf, MODEL_OUT)
+joblib.dump(clf, MODEL_OUT, compress=3)
 print(f"  model.pkl → {MODEL_OUT}")
 
 with open(FEATURES_OUT, "w", encoding="utf-8") as f:
