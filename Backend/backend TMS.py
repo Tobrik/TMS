@@ -959,7 +959,7 @@ async def extract_symptoms_endpoint(
 
     import httpx
 
-    chat_model = os.environ.get("GROQ_CHAT_MODEL", "llama3-70b-8192")
+    chat_model = os.environ.get("GROQ_CHAT_MODEL", "llama-3.3-70b-versatile")
     system_prompt = build_extraction_prompt()
 
     try:
