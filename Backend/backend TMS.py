@@ -916,7 +916,7 @@ async def analys_endpoint(body: AnalysRequest, user: dict = Depends(require_pati
     top1_name, top1_score = top3[0]
 
     preliminary_diagnose = " ".join(name for name, _ in top3)
-    if top1_score < 0.30 and body.diagnose_setup == "Nothing":
+    if top1_score < 0.10 and body.diagnose_setup == "Nothing":
         preliminary_diagnose = "Nothing"
 
     avg_score = sum(sc for _, sc in top3) / len(top3)
@@ -933,7 +933,7 @@ async def analys_endpoint(body: AnalysRequest, user: dict = Depends(require_pati
         for name, sc in top3
     ]
 
-    if top1_score < 0.30:
+    if top1_score < 0.10:
         return {
             "day": day,
             "diseaseName": "Unknown",
@@ -1019,7 +1019,8 @@ async def extract_symptoms_endpoint(
     if sex not in ("M", "F"):
         sex = "M"
 
-    return {"evidences": evidences, "age": age, "sex": sex}
+    logger.info("extract_symptoms: text=%r -> evidences=%s age=%s sex=%s", body.text[:80], evidences, age, sex)
+    return {"evidences": evidences, "age": age, "sex": sex, "noSymptoms": len(evidences) == 0}
 
 @app.post("/save_explanation")
 async def save_explanation_endpoint(body: SaveExplanationRequest, user: dict = Depends(require_patient)):
