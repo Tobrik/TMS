@@ -842,6 +842,19 @@ async def health():
 async def root():
     return {"message": "TMS API is running"}
 
+@app.get("/healthz")
+async def healthz():
+    from ml_model import _clf, N_FEATURES, LABEL_CLASSES, _MODEL_PATH
+    import os
+    model_file_exists = os.path.exists(_MODEL_PATH)
+    return {
+        "model_loaded": _clf is not None,
+        "model_path": str(_MODEL_PATH),
+        "model_file_exists": model_file_exists,
+        "n_features": N_FEATURES,
+        "n_classes": len(LABEL_CLASSES),
+    }
+
 # ─── Auth endpoints (public, rate-limited) ───
 
 @app.post("/regist_as_patient", response_model=RegisterResponse)
