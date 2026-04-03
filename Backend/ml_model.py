@@ -87,6 +87,28 @@ def build_feature_vector(evidences: List[str], age: int = 25, sex: str = "M") ->
     return vec
 
 
+# ─── Clinical syndrome grouping ───────────────────────────────────────────────
+# DDXPlus splits clinically identical/overlapping syndromes into separate classes.
+# We pool their probabilities so the model returns clinically meaningful results.
+# The first disease in each list becomes the "canonical" name for the group.
+CLINICAL_GROUPS: List[List[str]] = [
+    # Acute Coronary Syndrome: НС и NSTEMI/STEMI неразличимы без тропонина
+    # Клинически это один синдром (ОКС) — объединяем
+    ["Possible NSTEMI / STEMI", "Unstable angina"],
+]
+# NOTE: We intentionally do NOT group URTI/Influenza/Pharyngitis —
+# they have different treatments and the model should show them separately.
+# We do NOT group PSVT/AF — different management (cardioversion vs rate control).
+# Only merge diseases that are clinically INDISTINGUISHABLE without lab tests.
+
+# Build lookup: disease → canonical group representative
+_GROUP_MAP: dict = {}
+for _group in CLINICAL_GROUPS:
+    _canonical = _group[0]
+    for _disease in _group:
+        _GROUP_MAP[_disease] = _canonical
+
+
 def sklearn_predict(
     evidences: List[str],
     age: int = 25,
@@ -95,6 +117,8 @@ def sklearn_predict(
 ) -> List[Tuple[str, float]]:
     """
     Predict top-N diagnoses from evidence list.
+    Applies clinical grouping: probabilities of clinically equivalent
+    diseases are pooled under a single canonical name.
 
     Returns:
         List of (disease_name, probability) tuples, sorted descending.
@@ -107,8 +131,14 @@ def sklearn_predict(
     vec = build_feature_vector(evidences, age, sex)
     proba = _clf.predict_proba(vec.reshape(1, -1))[0]
 
-    top_indices = np.argsort(proba)[::-1][:top_n]
-    return [(LABEL_CLASSES[i], float(proba[i])) for i in top_indices]
+    # Pool probabilities within clinical groups
+    pooled: dict = {}
+    for i, disease in enumerate(LABEL_CLASSES):
+        canonical = _GROUP_MAP.get(disease, disease)
+        pooled[canonical] = pooled.get(canonical, 0.0) + float(proba[i])
+
+    sorted_results = sorted(pooled.items(), key=lambda x: x[1], reverse=True)
+    return sorted_results[:top_n]
 
 
 def validate_evidences(evidences: List[str]) -> Tuple[List[str], List[str]]:
@@ -216,6 +246,32 @@ _QUESTION_TRANSLATIONS: dict = {
     "E_214": {"ru": "Вы замечаете свистящий звук при выдохе?", "kk": "Ыдырау кезінде ысқырған дыбыс байқайсыз ба?"},
     "E_211": {"ru": "Вас несколько раз вырвало или были многократные позывы к рвоте?", "kk": "Сіздің бірнеше рет қусы ма немесе бірнеше рет құсуға ынтызарлық болды ма?"},
     "E_154": {"ru": "Ваша кожа значительно бледнее, чем обычно?", "kk": "Сіздің терінгіз әдеттегіден айтарлықтай бозарып кетті ме?"},
+    "E_76": {"ru": "Вы чувствуете лёгкое головокружение или неустойчивость?", "kk": "Сіз жеңіл бас айналуды немесе тұрақсыздықты сезесіз бе?"},
+    "E_13": {"ru": "Симптомы ухудшились за последние 2 недели и для их появления требуется всё меньше усилий?", "kk": "Соңғы 2 аптада белгілер нашарлады ма және олардың пайда болуы үшін күш азая ма?"},
+    "E_41": {"ru": "Вы контактировали с человеком со схожими симптомами за последние 2 недели?", "kk": "Соңғы 2 аптада ұқсас белгілері бар адаммен байланыста болдыңыз ба?"},
+    "E_116": {"ru": "У вас была простуда за последние 2 недели?", "kk": "Соңғы 2 аптада суықтадыңыз ба?"},
+    "E_105": {"ru": "У вас когда-либо был сердечный приступ или стенокардия (боль в груди)?", "kk": "Сізде бұрын инфаркт немесе стенокардия (кеуде ауруы) болды ма?"},
+    "E_22": {"ru": "У вас диагностирована проблема с сердечным клапаном?", "kk": "Сізде жүрек клапанының мәселесі диагноз қойылды ма?"},
+    "E_139": {"ru": "У вас врождённый порок сердца?", "kk": "Сізде туа біткен жүрек ақауы бар ма?"},
+    "E_106": {"ru": "У вас сердечная недостаточность?", "kk": "Сізде жүрек жеткіліксіздігі бар ма?"},
+    "E_64": {"ru": "Вы задыхаетесь при минимальной физической нагрузке?", "kk": "Ең аз күш жұмсаған кезде ентігесіз бе?"},
+    "E_67": {"ru": "У вас бывают приступы удушья или одышки, которые будят вас ночью?", "kk": "Түнде ұйқыдан оятатын тұншығу немесе ентігу ұстамалары болады ма?"},
+    "E_33": {"ru": "Боль уменьшается, когда вы наклоняетесь вперёд?", "kk": "Алға еңкейгенде ауырсыну азаяды ма?"},
+    "E_128": {"ru": "Вы когда-либо чувствовали, что задыхаетесь — кратковременно не могли дышать или говорить?", "kk": "Сіз қысқа уақытқа тыныс ала алмай немесе сөйлей алмай қалдыңыз ба?"},
+    "E_216": {"ru": "Боль усиливается при движении?", "kk": "Қозғалыс кезінде ауырсыну күшейе ме?"},
+    "E_30": {"ru": "Ваш живот вздут или распирает изнутри?", "kk": "Сіздің қарныңыз ішінен қысым сезіп кеуіп тұр ма?"},
+    "E_129": {"ru": "У вас есть высыпания, покраснение или проблемы с кожей?", "kk": "Сізде бөртпе, қызару немесе тері мәселелері бар ма?"},
+    "E_169": {"ru": "У вас зудит нос или задняя стенка горла?", "kk": "Сіздің мұрныңыз немесе тамағыңыздың артқы қабырғасы қышиды ма?"},
+    "E_170": {"ru": "У вас сильный зуд в одном или обоих глазах?", "kk": "Бір немесе екі көзіңіз қатты қышиды ма?"},
+    "E_182": {"ru": "У вас зелёные или жёлтые выделения из носа?", "kk": "Сізде жасыл немесе сары мұрын бөліндісі бар ма?"},
+    "E_121": {"ru": "У вас искривлённая носовая перегородка?", "kk": "Сіздің мұрын қалқасы қисайған ба?"},
+    "E_86": {"ru": "Есть ли у ваших близких родственников аллергия, сенная лихорадка или экзема?", "kk": "Жақын туыстарыңызда аллергия, шөп безгегі немесе экзема бар ма?"},
+    "E_45": {"ru": "Вы кашляете кровью?", "kk": "Сіз қан жөтелесіз бе?"},
+    "E_203": {"ru": "У вас сильные приступы кашля?", "kk": "Сізде күшті жөтел ұстамалары бар ма?"},
+    "E_202": {"ru": "У пациента коклюш (спастический кашель)?", "kk": "Пациентте күкірт жөтел бар ма?"},
+    "E_40": {"ru": "Вы контактировали с больным коклюшем?", "kk": "Сіз күкірт жөтелімен ауырған адаммен байланыста болдыңыз ба?"},
+    "E_112": {"ru": "При вдохе у вас свистящее или шумное дыхание после приступов кашля?", "kk": "Жөтел ұстамасынан кейін дем алғанда ысқырған немесе шулы тыныс алу бар ма?"},
+    "E_194": {"ru": "Вы замечаете высокочастотный звук при вдохе?", "kk": "Дем алғанда жоғары жиілікті дыбыс байқайсыз ба?"},
 }
 
 
