@@ -59,7 +59,6 @@ except Exception as e:
     EVIDENCES_META = {}
     logger.error("Failed to load release_evidences.json: %s", e)
 
-
 def build_feature_vector(evidences: List[str], age: int = 25, sex: str = "M") -> np.ndarray:
     """
     Build a 1D numpy feature vector from a list of evidence token strings.
@@ -108,6 +107,14 @@ for _group in CLINICAL_GROUPS:
     for _disease in _group:
         _GROUP_MAP[_disease] = _canonical
 
+# ─── Geographic filter ───────────────────────────────────────────────────────
+# Diseases essentially absent in CIS/Central Asia — suppress from final output
+# (their probability mass is redistributed to the next most likely disease)
+_GEO_EXCLUDED: set = {
+    "Ebola",          # Sub-Saharan Africa only
+    "Inguinal hernia", # Surgical — not a diagnostic differential
+}
+
 
 def sklearn_predict(
     evidences: List[str],
@@ -137,7 +144,10 @@ def sklearn_predict(
         canonical = _GROUP_MAP.get(disease, disease)
         pooled[canonical] = pooled.get(canonical, 0.0) + float(proba[i])
 
-    sorted_results = sorted(pooled.items(), key=lambda x: x[1], reverse=True)
+    # Apply geographic filter — skip diseases absent in CIS/Central Asia
+    filtered = {d: p for d, p in pooled.items() if d not in _GEO_EXCLUDED}
+
+    sorted_results = sorted(filtered.items(), key=lambda x: x[1], reverse=True)
     return sorted_results[:top_n]
 
 

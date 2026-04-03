@@ -30,6 +30,7 @@ interface Message {
 }
 
 function getTime(): string {
+  if (typeof window === "undefined") return "";
   return new Date().toLocaleTimeString("ru-RU", {
     hour: "2-digit",
     minute: "2-digit",

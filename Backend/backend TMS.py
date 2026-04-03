@@ -271,7 +271,7 @@ disease_doctors = {
     "Boerhaave": "СКОРАЯ ПОМОЩЬ (103) / Хирург",
     "Bronchiectasis": "Пульмонолог",
     "Bronchiolitis": "Педиатр / Пульмонолог",
-    "Bronchitis": "Терапевт / Педиатр",
+    "Bronchitis": "Терапевт",
     "Bronchospasm / acute asthma exacerbation": "Аллерголог / СКОРАЯ при тяжёлом приступе",
     "Chagas": "Инфекционист",
     "Chronic rhinosinusitis": "ЛОР-врач",
@@ -750,7 +750,7 @@ YELLOW_ZONE_DISEASES = {
 def classify_zone(disease: str, score: float) -> str:
     if disease in RED_ZONE_DISEASES or score > 0.6:
         return "red"
-    if disease in YELLOW_ZONE_DISEASES or score > 0.4:
+    if disease in YELLOW_ZONE_DISEASES or score > 0.5:
         return "yellow"
     return "green"
 
@@ -959,67 +959,40 @@ async def extract_symptoms_endpoint(
     user: dict = Depends(require_patient),
 ):
     """
-    NLP endpoint: sends patient's free-text description to LLaMA,
-    returns structured DDXPlus evidence IDs for use with /analys.
+    Pure BM25 extraction — no LLaMA needed.
+
+    Flow: Patient text → BM25 retrieval → binary E_XX codes → RF classifier.
+    LLaMA is used ONLY for explanation on the frontend (generateExplanation.ts).
+
+    BM25 directly identifies which of 223 DDXPlus evidences are present in the
+    patient text using multilingual (RU/EN/KK) indexing + Russian synonym expansion.
+    Only binary evidences are extracted here; categorical evidences (pain location,
+    rash properties) require separate value selection and are handled by clarifying
+    questions (/next_questions endpoint).
     """
-    groq_key = os.environ.get("GROQ_API_KEY", "")
-    if not groq_key:
-        raise HTTPException(status_code=500, detail="GROQ_API_KEY not configured on server")
-
-    import httpx
-
-    chat_model = os.environ.get("GROQ_CHAT_MODEL", "llama-3.3-70b-versatile")
-    system_prompt = build_extraction_prompt()
+    from retrieval import get_retriever
 
     try:
-        async with httpx.AsyncClient(timeout=30) as client:
-            resp = await client.post(
-                "https://api.groq.com/openai/v1/chat/completions",
-                headers={"Authorization": f"Bearer {groq_key}", "Content-Type": "application/json"},
-                json={
-                    "model": chat_model,
-                    "messages": [
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": body.text},
-                    ],
-                    "temperature": 0,
-                    "max_tokens": 1024,
-                },
-            )
-            resp.raise_for_status()
-    except httpx.HTTPStatusError as e:
-        logger.error("Groq chat API error: %s %s", e.response.status_code, e.response.text)
-        raise HTTPException(status_code=502, detail="AI service error")
+        retriever = get_retriever()
+        evidences, age, sex = retriever.extract_direct(body.text, top_k=20)
     except Exception as e:
-        logger.error("Groq chat request failed: %s", e)
-        raise HTTPException(status_code=502, detail="AI service unavailable")
+        logger.error("BM25 extraction failed: %s", e)
+        raise HTTPException(status_code=500, detail="Extraction failed")
 
-    content = resp.json().get("choices", [{}])[0].get("message", {}).get("content", "")
-
-    # Strip markdown code fences if present
-    if content.startswith("```"):
-        content = content.split("\n", 1)[-1]
-        if content.endswith("```"):
-            content = content[:-3]
-        content = content.strip()
-
-    try:
-        parsed = json.loads(content)
-    except json.JSONDecodeError:
-        logger.error("LLaMA returned non-JSON: %s", content[:200])
-        raise HTTPException(status_code=502, detail="AI returned invalid JSON")
-
-    evidences = parsed.get("evidences", [])
-    age = parsed.get("age") or 25
-    sex = parsed.get("sex") or "M"
+    # Defaults for missing demographics
+    if age is None:
+        age = 25
     if sex not in ("M", "F"):
         sex = "M"
 
-    logger.info("extract_symptoms: text=%r -> evidences=%s age=%s sex=%s", body.text[:80], evidences, age, sex)
     valid_evidences, invalid = validate_evidences(evidences)
     if invalid:
         logger.warning("extract_symptoms: filtered %d invalid tokens: %s", len(invalid), invalid)
 
+    logger.info(
+        "bm25 extract: text=%r -> %d evidences (age=%s sex=%s)",
+        body.text[:60], len(valid_evidences), age, sex,
+    )
     return {"evidences": valid_evidences, "age": age, "sex": sex, "noSymptoms": len(valid_evidences) == 0}
 
 

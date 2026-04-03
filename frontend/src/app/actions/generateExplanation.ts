@@ -143,6 +143,78 @@ const FALLBACK_DOCTOR_ERROR: Record<Lang, string> = {
   kk: "Негіздеме жасау кезінде қате орын алды.",
 };
 
+// Mapping from raw evidence IDs to short human-readable English names.
+// Covers the ~60 most common evidence IDs used by the ML model.
+const EVIDENCE_LABELS: Record<string, string> = {
+  "E_91": "fever",
+  "E_94": "chills / shivering",
+  "E_97": "sore throat",
+  "E_201": "cough",
+  "E_181": "runny or blocked nose",
+  "E_66": "significant shortness of breath",
+  "E_14": "chest pain at rest",
+  "E_53": "pain related to chief complaint",
+  "E_57": "pain radiating to arm / neck / jaw",
+  "E_50": "excessive sweating",
+  "E_155": "palpitations / irregular heartbeat",
+  "E_148": "nausea",
+  "E_51": "diarrhea",
+  "E_89": "fatigue / sleep disturbance",
+  "E_88": "extreme fatigue / bed-ridden",
+  "E_175": "general weakness / malaise",
+  "E_144": "diffuse muscle pain",
+  "E_77": "productive cough with coloured sputum",
+  "E_220": "pain worsens on deep breath",
+  "E_9": "swollen / painful lymph nodes",
+  "E_65": "difficulty swallowing",
+  "E_173": "heartburn / acid reflux",
+  "E_30": "abdominal bloating",
+  "E_64": "shortness of breath on minimal exertion",
+  "E_129": "rash / skin redness",
+  "E_82": "dizziness / near-fainting",
+  "E_164": "very irregular heartbeat",
+  "E_124": "asthma history / bronchodilator use",
+  "E_214": "wheezing on expiration",
+  "E_211": "repeated vomiting",
+  "E_154": "notably pale skin",
+  "E_76": "mild dizziness / unsteadiness",
+  "E_13": "worsening symptoms over 2 weeks",
+  "E_41": "contact with similarly ill person",
+  "E_116": "recent cold in past 2 weeks",
+  "E_105": "history of heart attack / angina",
+  "E_22": "diagnosed heart valve problem",
+  "E_139": "congenital heart defect",
+  "E_106": "heart failure",
+  "E_67": "nocturnal breathlessness / paroxysmal dyspnea",
+  "E_33": "pain relieved by leaning forward",
+  "E_128": "brief inability to breathe or speak",
+  "E_216": "pain worsens with movement",
+  "E_169": "itchy nose or throat",
+  "E_170": "eye itching",
+  "E_182": "green / yellow nasal discharge",
+  "E_121": "deviated nasal septum",
+  "E_86": "family history of allergy / eczema",
+  "E_45": "coughing up blood",
+  "E_203": "severe cough attacks",
+  "E_202": "whooping / spasmodic cough",
+  "E_40": "contact with whooping cough patient",
+  "E_112": "stridor after cough attacks",
+  "E_194": "high-pitched sound on inhalation",
+};
+
+/**
+ * Convert an array of evidence IDs (e.g. ["E_91", "E_77"]) to
+ * human-readable names (e.g. ["fever", "productive cough with coloured sputum"]).
+ * Unknown IDs are kept as-is so no information is lost.
+ */
+function resolveEvidenceLabels(evidences: string[]): string[] {
+  return evidences.map((id) => {
+    // Strip value suffix like "_@_V_161" for lookup, keep full id as fallback
+    const baseId = id.split("_@_")[0];
+    return EVIDENCE_LABELS[baseId] ?? EVIDENCE_LABELS[id] ?? id;
+  });
+}
+
 export interface ExplanationResult {
   patientExplanation: string;
   doctorExplanation: string;
@@ -195,7 +267,7 @@ export async function generateExplanation(
     };
   }
 
-  const symptomsText = detectedSymptoms.join(", ");
+  const symptomsText = resolveEvidenceLabels(detectedSymptoms).join(", ");
   const topDiseasesText = topDiseases
     .map((d, i) => `${i + 1}. ${d.label} (${d.name}) — ${Math.round(d.score * 100)}%`)
     .join("\n");
