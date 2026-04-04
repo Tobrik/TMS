@@ -94,7 +94,7 @@ _VOCAB: List[Tuple[str, List[str]]] = [
      ["E_51"]),   # diarrhea
     (r"изжога|кислый\s+привкус|кислотн\w+\s+рефлюкс",
      ["E_173", "E_53", "E_55_@_V_197", "E_54_@_V_181"]),  # GERD → pain + epigastric + burning
-    (r"жжение.{0,10}груди|жжёт\s+в\s+груди|жжение\s+за\s+грудин",
+    (r"жжение.{0,10}груди|жжёт\s+(?:в\s+груди|за\s+грудин)|жжение\s+за\s+грудин",
      ["E_173", "E_53", "E_55_@_V_101", "E_54_@_V_181"]),  # burning in chest
     (r"давящ\w+\s+боль|тяжест\w+\s+в\s+груди|давит\s+(?:в\s+груди|на\s+грудь)|сжимающ\w+\s+боль|тяжесть.{0,10}груди",
      ["E_53", "E_54_@_V_183"]),  # pressing/heavy pain character
@@ -128,6 +128,420 @@ _VOCAB: List[Tuple[str, List[str]]] = [
      ["E_123"]),  # asthma/COPD history
     (r"сердечн\w+\s+недостаточност",
      ["E_106"]),  # heart failure history
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # ── ENGLISH patterns ─────────────────────────────────────────────────────
+    # Mirrors the Russian vocab above for English-language input.
+    # ══════════════════════════════════════════════════════════════════════════
+
+    # ── Head / Neuro (EN) ─────────────────────────────────────────────────────
+    (r"headache|head\s*ache|head.{0,5}(?:hurts|pain|pounding|throbbing)|migraine",
+     ["E_53", "E_55_@_V_89"]),  # headache → pain + forehead/head location
+    (r"visual\s+disturbance|blurr\w+\s+vision|see\w*\s+spots|aura|light\s+sensitiv|photophob",
+     ["E_53"]),   # visual symptoms with pain context
+    (r"dizz\w+|lightheaded|vertigo|feel\w*\s+faint",
+     ["E_82"]),   # dizziness
+    (r"faint\w*|lost\s+consciousness|pass\w*\s+out|black\w*\s+out",
+     ["E_82"]),   # syncope
+    (r"numb\w+|tingl\w+|pins\s+and\s+needles",
+     ["E_177"]),  # numbness / tingling
+
+    # ── Respiratory (EN) ──────────────────────────────────────────────────────
+    (r"cough\w*",
+     ["E_201"]),  # cough
+    (r"sputum|phlegm|cough\w*\s+(?:up|with)\s+(?:green|yellow|colored)",
+     ["E_77"]),   # colored sputum
+    (r"runny\s+nose|stuffy\s+nose|nasal\s+congestion|blocked\s+nose|sneezing",
+     ["E_181"]),  # nasal congestion
+    (r"green\w*\s+(?:nasal|discharge)|yellow\w*\s+(?:nasal|discharge)",
+     ["E_182"]),  # purulent nasal discharge
+    (r"shortness\s+of\s+breath|short\s+of\s+breath|can'?t\s+breathe|difficult\w*\s+breath\w*|breathless|dyspnea|hard\s+to\s+breathe",
+     ["E_66"]),   # shortness of breath
+    (r"wheez\w+|wheezing\s+(?:on|when)\s+exhal",
+     ["E_214"]),  # wheezing on exhale
+    (r"stridor|noisy\s+breath\w*\s+(?:in|when\s+inhal)",
+     ["E_112"]),  # stridor
+    (r"sore\s+throat|throat\s+(?:hurts|pain|ache)|painful\s+(?:to\s+)?swallow|difficulty\s+swallow",
+     ["E_97", "E_53", "E_55_@_V_148"]),  # sore throat → pain + pharynx
+    (r"pain.{0,15}(?:deep\s+breath|breath\w+\s+in|inhal)|hurts\s+(?:to|when\s+(?:i\s+)?)\s*breath|pleuritic|(?:hurts|pain).{0,10}breath\w*\s+(?:in\s+)?deeply",
+     ["E_220"]),  # pleuritic pain
+
+    # ── Fever / Systemic (EN) ─────────────────────────────────────────────────
+    (r"fever|temperature\s+\d|feeling\s+hot|febrile",
+     ["E_91"]),   # fever
+    (r"chills?|shiver\w*|rigor",
+     ["E_94"]),   # chills
+    (r"muscle\s+(?:pain|ache)|body\s+ache|aching\s+all\s+over",
+     ["E_144"]),  # muscle pain
+    (r"fatigue\w*|tired|exhausted|weak\b|weakness|malaise|no\s+energy",
+     ["E_175"]),  # fatigue
+    (r"sweat\w+|perspir\w+|drenched\s+in\s+sweat",
+     ["E_50"]),   # sweating
+
+    # ── Cardiovascular (EN) ───────────────────────────────────────────────────
+    (r"chest\s+pain|pain\s+in\s+(?:my\s+)?chest|chest\s+(?:hurts|pressure|tightness|squeezing)",
+     ["E_14", "E_53", "E_55_@_V_101"]),  # chest pain → pain + upper chest
+    (r"palpitat\w+|heart\s+(?:racing|pounding|beating\s+fast|flutter)|irregular\w*\s+(?:heart|pulse|beat)|(?:heart|pulse)\s+(?:is\s+)?irregular|beating\s+(?:fast\s+)?(?:and\s+)?irregular",
+     ["E_155"]),  # palpitations
+    (r"radiat\w*.{0,15}(?:left\s+arm|left\s+shoulder)|pain.{0,10}left\s+arm|left\s+arm.{0,10}(?:pain|numb|tingl)",
+     ["E_14", "E_53", "E_57_@_V_195"]),  # radiates to left arm
+    (r"radiat\w*.{0,15}jaw|jaw\s+pain|(?:and|to)\s+(?:my\s+)?jaw|pain.{0,15}jaw",
+     ["E_53", "E_57_@_V_121"]),  # radiates to jaw
+    (r"pressing\s+(?:pain|chest)|heavy.{0,10}chest|crushing\s+(?:pain|chest)|squeezing\s+(?:pain|chest)",
+     ["E_53", "E_54_@_V_183"]),  # pressing/heavy character
+
+    # ── Gastrointestinal (EN) ─────────────────────────────────────────────────
+    (r"nausea\w*|nauseous|feel\w*\s+sick|queasy",
+     ["E_148"]),  # nausea
+    (r"vomit\w*|threw\s+up|throwing\s+up|thrown\s+up|puk\w+",
+     ["E_148"]),  # vomiting
+    (r"(?:threw|throwing|thrown)\s+up\s+(?:twice|several|multiple|many|[2-9])|vomit\w*\s+(?:twice|several|multiple|repeatedly|[2-9])",
+     ["E_211"]),  # repeated vomiting
+    (r"(?:stomach|belly|abdomen|abdominal)\s+(?:pain|ache|hurts|cramp)|pain\s+in\s+(?:my\s+)?(?:stomach|belly|abdomen)|(?:my\s+)?(?:stomach|belly|tummy)\s+hurts|belly\s+button|navel|umbilical|peri.?umbilical",
+     ["E_53", "E_55_@_V_187"]),  # abdominal pain → pain + belly
+    (r"(?:lower|right)\s+right\s+(?:side|quadrant|abdomen)|right\s+lower\s+(?:side|quadrant|abdomen)|right\s+(?:side|flank).{0,10}(?:pain|hurts)|(?:pain|hurts).{0,10}(?:lower|right)\s+right|(?:moved|migrated).{0,15}(?:lower|right)\s+(?:right\s+)?side",
+     ["E_53", "E_55_@_V_87"]),  # RLQ pain → right iliac fossa (appendicitis)
+    (r"diarr\w+|loose\s+stool|watery\s+stool|frequent\s+(?:stool|bowel)",
+     ["E_51"]),   # diarrhea
+    (r"heartburn|acid\s+reflux|burning.{0,10}(?:stomach|chest|throat)",
+     ["E_173", "E_53", "E_55_@_V_197", "E_54_@_V_181"]),  # GERD → burning + epigastric
+
+    # ── Skin (EN) ─────────────────────────────────────────────────────────────
+    (r"rash|skin\s+(?:rash|lesion|spots)|hives|urticaria",
+     ["E_129"]),  # rash
+    (r"itch\w+|itchy|scratching",
+     ["E_129"]),  # itching
+
+    # ── Eyes / ENT (EN) ───────────────────────────────────────────────────────
+    (r"red\s+eye|eye\w*\s+(?:red|bloodshot)|conjunctivit",
+     ["E_74"]),   # eye redness
+    (r"swollen\s+(?:lymph|gland)|lymph\s+node|enlarged\s+(?:lymph|gland|node)",
+     ["E_9"]),    # swollen lymph nodes
+    (r"(?:lost|loss).{0,10}(?:smell|taste)|can'?t\s+smell",
+     ["E_103"]),  # loss of smell
+
+    # ── History / Context (EN) ────────────────────────────────────────────────
+    (r"contact\w*\s+(?:with\s+)?(?:sick|ill|infected)|(?:someone|person).{0,10}(?:sick|ill)\s+(?:around|near|at)",
+     ["E_41"]),   # contact with sick person
+    (r"allerg\w+",
+     ["E_169"]),  # allergy
+    (r"asthma|(?:history\s+of\s+)?asthma",
+     ["E_123"]),  # asthma history
+    (r"heart\s+failure",
+     ["E_106"]),  # heart failure history
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # ── DISEASE-SPECIFIC patterns (EN+RU) — full 49-disease coverage ─────────
+    # Each block targets symptoms pathognomonic for specific DDXPlus diseases.
+    # ══════════════════════════════════════════════════════════════════════════
+
+    # ── Ear pain → Acute otitis media ─────────────────────────────────────────
+    (r"ear\s*(?:ache|pain|hurts|infection)|pain\s+in\s+(?:my\s+)?ear|otitis",
+     ["E_53", "E_55_@_V_129"]),  # ear pain → pain + ear(R)
+    (r"боль.{0,10}ух[еоа]|ух[оа].{0,10}бол|отит|стреляет\s+в\s+ухе|болит\s+ухо",
+     ["E_53", "E_55_@_V_129"]),  # боль в ухе
+
+    # ── Hoarse voice → Acute laryngitis ───────────────────────────────────────
+    (r"hoarse|lost\s+(?:my\s+)?voice|voice\s+(?:gone|hoarse|raspy|deeper)|laryngitis|can'?t\s+speak",
+     ["E_212"]),
+    (r"охрип|осип|потерял\w*\s+голос|голос\s+(?:сел|пропал|хриплый)|ларингит|не\s+могу\s+говорить",
+     ["E_212"]),
+
+    # ── Sinus pain → Rhinosinusitis (acute/chronic/allergic) ──────────────────
+    (r"sinus\w*|facial\s+(?:pain|pressure)|pain.{0,10}(?:forehead|cheek|around\s+(?:nose|eyes))|stuffed\s+up",
+     ["E_53", "E_55_@_V_89", "E_181"]),  # sinus pain → forehead + congestion
+    (r"гайморит|синусит|боль.{0,10}пазух|давит.{0,10}лоб|давит.{0,10}переносиц|тяжесть.{0,10}лиц",
+     ["E_53", "E_55_@_V_89", "E_181"]),
+
+    # ── Cluster headache — severe unilateral + eye ────────────────────────────
+    (r"cluster\s+headache|excruciating.{0,15}headache|headache.{0,15}(?:eye|behind.{0,5}eye)|pain.{0,10}(?:behind|around|near)\s+(?:my\s+)?eye|(?:eye\s+water|tearing|red\s+eye).{0,15}headache",
+     ["E_53", "E_55_@_V_125", "E_127"]),  # headache + eye + tearing
+    (r"кластерн\w+\s+(?:головн|боль)|невыносим\w+\s+боль.{0,10}глаз|боль.{0,10}глаз.{0,10}слёз",
+     ["E_53", "E_55_@_V_125", "E_127"]),
+
+    # ── Panic attack — fear of dying + palpitations + tingling ────────────────
+    (r"panic\s+attack|fear\s+(?:of\s+)?dying|afraid.{0,10}(?:die|dying|death)|feel\w*\s+like\s+(?:i'?m\s+)?dying",
+     ["E_111", "E_155"]),
+    (r"(?:паническ|панич)\w+\s+атак|страх\s+смерти|боюсь\s+умереть|кажется.{0,10}умира",
+     ["E_111", "E_155"]),
+    (r"depersonaliz|dereali|detach\w*\s+from\s+(?:body|reality|surroundings)",
+     ["E_171"]),  # depersonalization
+    (r"деперсонализ|дереализ|отстранён.{0,10}тел",
+     ["E_171"]),
+
+    # ── Whooping cough — paroxysmal cough + vomiting after cough ──────────────
+    (r"whooping\s+cough|pertussis|paroxysm\w*\s+cough|cough\w*\s+(?:fits?|spells?|attacks?)",
+     ["E_203", "E_201"]),  # intense coughing fits
+    (r"коклюш|приступ\w+\s+каш\w+|каш\w+\s+(?:приступ|до\s+рвот)",
+     ["E_203", "E_201"]),
+    (r"vomit\w*\s+after\s+cough|cough\w*\s+(?:until|till|then)\s+(?:i\s+)?(?:vomit|threw|throw)",
+     ["E_166"]),  # vomiting after cough
+    (r"рвот\w+\s+после\s+каш\w+|каш\w+.{0,10}до\s+рвот",
+     ["E_166"]),
+
+    # ── Hemoptysis → TB / Pulmonary neoplasm / PE ─────────────────────────────
+    (r"cough\w*\s+(?:up\s+)?blood|blood\w*\s+(?:in\s+)?(?:sputum|phlegm)|hemoptysis",
+     ["E_45"]),
+    (r"каш\w+\s+(?:с\s+)?кров|кров\w+\s+(?:мокрот|в\s+мокрот)|кровохаркан",
+     ["E_45"]),
+
+    # ── Weight loss → TB / Pulmonary neoplasm / Pancreatic neoplasm / HIV ─────
+    (r"(?:lost|losing)\s+weight|weight\s+loss|unintentional\w*\s+(?:weight|lost)|getting\s+thin",
+     ["E_162"]),
+    (r"похудел|потеря\s+веса|теряю\s+вес|сильно\s+похудел|худею",
+     ["E_162"]),
+
+    # ── Night sweats → TB / HIV ───────────────────────────────────────────────
+    (r"night\s+sweat|sweat\w*\s+(?:at\s+)?night|wake\s+up\s+(?:drenched|soaked|sweating)",
+     ["E_50", "E_219"]),  # sweating + worse at night
+    (r"ночн\w+\s+пот|потею\s+ночью|просыпаюсь\s+(?:в\s+поту|мокрый)",
+     ["E_50", "E_219"]),
+
+    # ── Pale skin → Anemia ────────────────────────────────────────────────────
+    (r"(?:look|looking|appear)\s+pale|pale\s+skin|skin\s+(?:is\s+)?pale|pallor|very\s+pale",
+     ["E_154"]),
+    (r"бледн\w+\s+кож|кожа\s+бледн|бледност|побледнел",
+     ["E_154"]),
+
+    # ── Black stool → GI bleeding / Anemia ────────────────────────────────────
+    (r"black\s+stool|tarry\s+stool|melena|stool\w*\s+(?:like\s+)?(?:coal|tar)",
+     ["E_140"]),
+    (r"чёрн\w+\s+стул|стул\s+(?:как\s+)?(?:уголь|дёготь)|мелена",
+     ["E_140"]),
+
+    # ── Blood in stool → GI bleeding ─────────────────────────────────────────
+    (r"blood\s+in\s+(?:my\s+)?stool|bloody\s+stool|rectal\s+bleed|blood\s+(?:when|after)\s+(?:i\s+)?(?:wipe|poo|poop)",
+     ["E_179"]),
+    (r"кров\w+\s+(?:в\s+)?стул|кров\w+\s+из\s+(?:прямой|задн)|ректальн\w+\s+кровотечен",
+     ["E_179"]),
+
+    # ── Vomiting blood → Boerhaave / upper GI bleed ──────────────────────────
+    (r"vomit\w*\s+blood|blood\w*\s+(?:in\s+)?vomit|coffee\s+ground|hematemesis|threw\s+up\s+blood",
+     ["E_210"]),
+    (r"рвот\w+\s+(?:с\s+)?кров|кров\w+\s+(?:в\s+)?рвот|кофейн\w+\s+гущ",
+     ["E_210"]),
+
+    # ── Difficulty swallowing → Epiglottitis / Pharyngitis ────────────────────
+    (r"difficulty\s+swallow|can'?t\s+swallow|painful\s+(?:to\s+)?swallow|dysphagia|trouble\s+swallow",
+     ["E_65"]),
+    (r"трудно\s+глотать|не\s+могу\s+глотать|дисфаги|нарушен\w+\s+глотан",
+     ["E_65"]),
+
+    # ── Drooling / excess saliva → Epiglottitis / Dystonic reactions ──────────
+    (r"drool\w*|excess\w*\s+saliva|can'?t\s+swallow\s+saliva|saliva\s+dripping",
+     ["E_190"]),
+    (r"слюнотечени|слюна\s+течёт|не\s+могу\s+глотать\s+слюн|обильн\w+\s+слюн",
+     ["E_190"]),
+
+    # ── Muscle weakness / paralysis → Guillain-Barré / Myasthenia / SLE ──────
+    (r"(?:weak|weakness)\s+(?:in\s+)?(?:both\s+)?(?:legs?|arms?|limbs?)|ascending\s+weakness|can'?t\s+(?:move|lift|stand|walk)",
+     ["E_84"]),
+    (r"слабость\s+в\s+(?:обеих\s+)?(?:ногах|руках|конечност)|не\s+могу\s+(?:встать|ходить|поднять)|восходящ\w+\s+слабост",
+     ["E_84"]),
+
+    # ── Foot numbness → Guillain-Barré ────────────────────────────────────────
+    (r"numb\w*\s+(?:in\s+)?(?:my\s+)?(?:feet|foot|toes)|(?:feet|foot|toes)\s+(?:are\s+)?numb|tingl\w+\s+(?:in\s+)?(?:feet|foot|toes)",
+     ["E_93"]),
+    (r"онемени\w+\s+(?:в\s+)?(?:стоп|ног|пальц\w+\s+ног)|ступни\s+немеют|ноги\s+онемели",
+     ["E_93"]),
+
+    # ── Facial weakness → Guillain-Barré / Myasthenia ─────────────────────────
+    (r"facial\s+(?:weakness|droop|paralysis)|(?:face|mouth)\s+(?:droop|asymmetr)|one\s+side\s+of\s+(?:my\s+)?face",
+     ["E_156"]),
+    (r"слабость.{0,10}лиц|лицо\s+(?:перекосил|ослабл)|паралич\s+лиц|одна\s+сторона\s+лица",
+     ["E_156"]),
+
+    # ── Drooping eyelid → Myasthenia gravis ───────────────────────────────────
+    (r"droop\w*\s+eyelid|eyelid\s+droop|ptosis|can'?t\s+(?:open|raise|lift)\s+(?:my\s+)?(?:eye|eyelid)|heavy\s+eyelid",
+     ["E_172"]),
+    (r"опущен\w+\s+век|веко\s+(?:опустил|не\s+поднимается)|птоз|тяжёл\w+\s+век",
+     ["E_172"]),
+
+    # ── Muscle spasms / neck stiffness → Dystonic reactions ───────────────────
+    (r"muscle\s+spasm|neck\s+(?:stiff|spasm|rigid|lock)|can'?t\s+(?:turn|move)\s+(?:my\s+)?(?:head|neck)|torticollis|jaw\s+(?:lock|stuck|clench)",
+     ["E_192", "E_193"]),
+    (r"спазм\w+\s+мышц|шея\s+(?:свело|не\s+поворачивается|заклинил)|кривошея|судорог\w+\s+(?:лиц|шеи|мышц)|челюсть\s+(?:свело|заклинил)",
+     ["E_192", "E_193"]),
+
+    # ── Tongue protrusion → Dystonic reactions ────────────────────────────────
+    (r"tongue\s+(?:sticking\s+out|protrud|involuntar)|can'?t\s+(?:keep|control)\s+(?:my\s+)?tongue",
+     ["E_168"]),
+    (r"язык\s+(?:вывалива|высовыва|не\s+могу\s+убрать)|непроизвольн\w+\s+(?:движени|высовыван)\w+\s+язык",
+     ["E_168"]),
+
+    # ── Jaw difficulty → Dystonic reactions / Epiglottitis ────────────────────
+    (r"can'?t\s+open\s+(?:my\s+)?mouth|jaw\s+(?:won'?t|can'?t|stuck|locked|clench)|mouth\s+(?:stuck|locked|won'?t\s+open)|trismus",
+     ["E_205"]),
+    (r"не\s+могу\s+открыть\s+рот|челюсть\s+(?:заклинил|не\s+открывается)|тризм|рот\s+не\s+открывается",
+     ["E_205"]),
+
+    # ── Bloating → GI / GERD ─────────────────────────────────────────────────
+    (r"bloat\w*|(?:belly|stomach|abdomen)\s+(?:distend|swell|swollen|puffed)|feel\w*\s+(?:full|stuffed)",
+     ["E_30"]),
+    (r"вздути\w+|живот\s+(?:раздул|надул|распир)|пучит|метеоризм",
+     ["E_30"]),
+
+    # ── Symptoms worse after eating → GERD ────────────────────────────────────
+    (r"worse\s+after\s+eat|(?:symptoms?|pain)\s+(?:after|following)\s+(?:eat|meal|food)|eating\s+makes\s+it\s+worse",
+     ["E_215"]),
+    (r"хуже\s+после\s+еды|усиливается\s+после\s+(?:еды|приёма\s+пищи)|после\s+еды\s+(?:хуже|болит|тошнит)",
+     ["E_215"]),
+
+    # ── Worse lying down, better sitting → GERD / Pericarditis ────────────────
+    (r"worse\s+(?:lying|laying)\s+down|better\s+(?:when\s+)?sitting|(?:symptoms?|pain)\s+(?:lying|lay|recumb)",
+     ["E_217"]),
+    (r"хуже\s+лёжа|лучше\s+(?:когда\s+)?сижу|усиливается\s+в\s+положении\s+лёж",
+     ["E_217"]),
+
+    # ── Pain improves leaning forward → Pericarditis ──────────────────────────
+    (r"better\s+(?:when\s+)?(?:i\s+)?lean\w*\s+forward|(?:pain|chest)\s+(?:ease|improv|better).{0,10}lean|lean\w*\s+forward.{0,10}(?:help|ease|better|relief)|lean\s+forward",
+     ["E_33"]),
+    (r"легче\s+(?:когда\s+)?наклон\w+\s+вперёд|боль\s+уменьша\w+\s+(?:при\s+)?наклон|наклон\w+\s+вперёд.{0,10}(?:легче|лучше|помогает)",
+     ["E_33"]),
+
+    # ── Worse with exertion → Stable angina / COPD ───────────────────────────
+    (r"worse\s+(?:with\s+)?(?:exert|exercis|effort|walking|stairs)|(?:pain|symptoms?)\s+(?:on|with|during)\s+(?:exert|effort|physical)",
+     ["E_218"]),
+    (r"хуже\s+при\s+(?:нагрузк|ходьб|подъём)|усиливается\s+(?:при\s+)?(?:физическ|нагрузк)|при\s+нагрузке\s+(?:хуже|больше|сильн)",
+     ["E_218"]),
+
+    # ── Pain worse with movement → Musculoskeletal / Rib fracture ─────────────
+    (r"(?:pain|hurt)\s+(?:worse\s+)?(?:when\s+)?(?:i\s+)?(?:move|moving|turn|twist)|movement\s+makes\s+(?:it\s+)?worse",
+     ["E_216"]),
+    (r"боль\s+(?:усиливается\s+)?при\s+движении|больно\s+(?:поворачиват|двигат)|при\s+движении\s+(?:хуже|больн)",
+     ["E_216"]),
+
+    # ── Worse with coughing/straining → Pneumothorax / Hernia / Rib fracture ─
+    (r"worse\s+(?:when\s+)?(?:i\s+)?(?:cough|strain|lift|sneez|bear\w*\s+down)|(?:pain|hurt)\w*\s+(?:when\s+)?(?:i\s+)?(?:cough|sneez|strain|lift)|(?:cough|sneez|strain).{0,10}(?:makes?\s+(?:it\s+)?worse|hurts)",
+     ["E_221"]),
+    (r"хуже\s+(?:при\s+)?(?:кашл|чихани|натуживани|поднятии)|больно\s+(?:кашлять|чихать|тужиться)|при\s+каш\w+\s+(?:хуже|больн)",
+     ["E_221"]),
+
+    # ── Worsening over 2 weeks → Stable angina / Progressive conditions ──────
+    (r"(?:getting|been)\s+worse.{0,15}(?:week|day|past\s+few)|(?:symptoms?|condition)\s+(?:progress|worsen)\w*",
+     ["E_13"]),
+    (r"ухудшается.{0,10}(?:недел|дн)|становится\s+хуже|симптомы\s+прогрессир",
+     ["E_13"]),
+
+    # ── Choking / suffocation episodes → Laryngospasm / Panic ─────────────────
+    (r"chok\w+\s+(?:episode|spell|attack|sensation)|felt\s+like\s+(?:i\s+was\s+)?choking|sudden\w*\s+(?:choking|suffocating|couldn'?t\s+breathe)",
+     ["E_75"]),
+    (r"приступ\s+удушь|чувство\s+(?:удушь|нехватки\s+воздуха)|задыхаюсь\s+приступ|внезапно\s+(?:перестал|не\s+мог)\s+дышать",
+     ["E_75"]),
+
+    # ── Brief suffocation resolved → Laryngospasm ────────────────────────────
+    (r"couldn'?t\s+breathe.{0,20}(?:passed|resolved|stopped|went\s+away|brief|moment)|brief\s+(?:choking|suffocating)|couldn'?t\s+speak.{0,15}(?:second|moment|brief)",
+     ["E_128"]),
+    (r"не\s+мог\s+дышать.{0,15}(?:прошло|секунд|момент|кратко)|кратковременн\w+\s+(?:удушье|остановка\s+дыхани)",
+     ["E_128"]),
+
+    # ── Nocturnal dyspnea → Pulmonary edema / CHF ────────────────────────────
+    (r"wake\s+up.{0,15}(?:breathless|can'?t\s+breathe|gasping|choking)|(?:breathless|choking|dyspnea).{0,10}(?:night|sleep|wak)",
+     ["E_67"]),
+    (r"просыпаюсь\s+(?:от\s+)?(?:удушь|нехватки\s+воздуха|задыха)|ночн\w+\s+(?:удушь|одышк|приступ)",
+     ["E_67"]),
+
+    # ── Swelling → Localized edema / CHF / Anaphylaxis ───────────────────────
+    (r"swell\w*|edema|swollen\s+(?:leg|ankle|feet|face|lip|tongue)|puff\w+\s+(?:up|face|eyes)",
+     ["E_151"]),
+    (r"отёк|опухл\w+|распухл|отекл\w+\s+(?:ног|лиц|губ|язык)|припухлост",
+     ["E_151"]),
+
+    # ── Loss of appetite → Neoplasm / TB / Anemia ────────────────────────────
+    (r"(?:lost|loss\s+of|no)\s+appetite|don'?t\s+(?:feel\s+like|want\s+to)\s+eat|not\s+hungry|eating\s+less",
+     ["E_161"]),
+    (r"нет\s+аппетит|пропал\s+аппетит|не\s+хочу\s+есть|потеря\s+аппетит",
+     ["E_161"]),
+
+    # ── Red cheeks / flushing → Scombroid food poisoning / SLE ────────────────
+    (r"(?:cheeks?|face)\s+(?:turned|flush|red|burning)|flushing|face\s+is\s+red|red\s+(?:cheeks?|face)",
+     ["E_92"]),
+    (r"щёки\s+(?:красн|горят|покраснел)|лицо\s+(?:красн|покраснел|горит)|приливы\s+(?:к\s+)?лиц",
+     ["E_92"]),
+
+    # ── After eating fish → Scombroid ─────────────────────────────────────────
+    (r"(?:ate|eat\w*)\s+(?:bad\s+)?(?:fish|tuna|mackerel|sushi)|fish\s+(?:poison|allergy)|after\s+(?:eat\w*\s+)?fish",
+     ["E_42"]),  # contact with allergen (fish)
+    (r"(?:съел|ел|после)\s+(?:рыб|тунц|суши)|рыб\w+\s+(?:отравлен|аллерги)|после\s+рыб",
+     ["E_42"]),
+
+    # ── Unusual bleeding / bruising → SLE / Anemia ───────────────────────────
+    (r"bruis\w+\s+(?:easily|without\s+reason)|unexplained\s+(?:bruise|bleed)|unusual\s+(?:bleed|bruise)",
+     ["E_178"]),
+    (r"синяки\s+(?:без\s+причин|легко)|необъяснимые\s+(?:синяки|кровотечен)|кровоточ\w+\s+(?:без\s+причин|дёсн)",
+     ["E_178"]),
+
+    # ── Irregular heartbeat (chaotic) → Atrial fibrillation ───────────────────
+    (r"irregular\w*\s+(?:heart|pulse|beat|rhythm)|(?:heart|pulse)\s+(?:all\s+over|chaotic|erratic|skipping|irregular)|missing\s+(?:a\s+)?beat|arrhythmi|beating.{0,10}irregular",
+     ["E_164"]),
+    (r"нерегулярн\w+\s+(?:пульс|сердцебиени|ритм)|аритми|перебои\s+в\s+(?:сердц|ритм)|сердце\s+(?:замирает|пропускает)",
+     ["E_164"]),
+
+    # ── Double vision → Myasthenia gravis ─────────────────────────────────────
+    (r"double\s+vision|see\w*\s+(?:double|two)|diplopia|two\s+(?:images?|of\s+everything)",
+     ["E_52"]),
+    (r"двоится\s+в\s+глазах|двоение|дипло|вижу\s+(?:двойн|два\s+изображен)",
+     ["E_52"]),
+
+    # ── Mouth ulcers → SLE ────────────────────────────────────────────────────
+    (r"mouth\s+(?:ulcer|sore)|(?:ulcer|sore)\s+(?:in\s+)?(?:my\s+)?mouth|canker\s+sore|oral\s+ulcer",
+     ["E_206"]),
+    (r"язв\w+\s+(?:во\s+)?рту|стоматит|ранки\s+во\s+рту|болячк\w+\s+во\s+рту",
+     ["E_206"]),
+
+    # ── Pale stool + dark urine → Hepatic / Pancreatic ──────────────────────
+    (r"pale\s+stool|(?:light|white|clay)\s+(?:colored\s+)?stool|dark\s+urine|urine\s+(?:is\s+)?(?:dark|brown|tea)",
+     ["E_188"]),
+    (r"светл\w+\s+(?:кал|стул)|бесцветн\w+\s+(?:кал|стул)|тёмн\w+\s+моч|моча\s+(?:тёмн|коричнев)",
+     ["E_188"]),
+
+    # ── Breathless with minimal effort → Pulmonary edema / CHF / Anemia ──────
+    (r"(?:breathless|winded|panting).{0,15}(?:minimal|slight|little|small)\s+(?:effort|exertion|activity)|out\s+of\s+breath.{0,10}(?:walk|stair|dress)",
+     ["E_64"]),
+    (r"одышка\s+при\s+(?:малейш|миним|небольш)\w+\s+(?:нагрузк|усили)|задыхаюсь\s+(?:при\s+ходьбе|на\s+лестнице)",
+     ["E_64"]),
+
+    # ── Extreme fatigue / bedridden → Severe conditions ──────────────────────
+    (r"(?:so\s+tired|exhausted).{0,15}(?:can'?t\s+get\s+up|stay\s+in\s+bed|can'?t\s+function)|bedridden|stuck\s+in\s+bed",
+     ["E_88"]),
+    (r"(?:настолько|так)\s+(?:устал|слаб).{0,10}(?:не\s+могу\s+встать|лежу\s+весь)|лежу\s+(?:целый|весь)\s+день|прикован\s+к\s+кровати",
+     ["E_88"]),
+
+    # ── Confusion / disorientation → Severe infections / Neuro ───────────────
+    (r"confus\w+|disorient\w+|(?:don'?t|can'?t)\s+(?:know|remember)\s+where\s+(?:i\s+)?am|mental\s+(?:fog|confusion)",
+     ["E_39"]),
+    (r"спутанност\w+\s+сознани|дезориентац|не\s+понимаю\s+где\s+(?:я|нахожусь)|заторможен",
+     ["E_39"]),
+
+    # ── Loss of consciousness → Syncope / Seizures ──────────────────────────
+    (r"(?:lost|loss\s+of)\s+consciousness|passed\s+out|blacked\s+out|fainted",
+     ["E_159"]),
+    (r"потерял\s+сознани|потеря\s+сознани|упал\s+в\s+обморок|отключился",
+     ["E_159"]),
+
+    # ── Seizures / convulsions ────────────────────────────────────────────────
+    (r"seizure|convulsion|(?:violent|sustained)\s+muscle\s+contraction|epilep\w*\s+(?:fit|attack)|absense\s+episode",
+     ["E_43"]),
+    (r"судорог\w+|конвульси|припадок|эпилепт\w+\s+(?:приступ|припадок)|потеря\s+сознания\s+с\s+судорог",
+     ["E_43"]),
+
+    # ── Side chest pain → Pleurisy / Pneumothorax / PE ───────────────────────
+    (r"pain\s+(?:in\s+)?(?:my\s+)?(?:left|right)\s+(?:side\s+(?:of\s+)?)?chest|(?:left|right)\s+(?:side\s+)?chest\s+pain|(?:pain|stab)\w*\s+(?:in\s+)?(?:my\s+)?(?:left|right)\s+(?:lung|rib)",
+     ["E_53", "E_55_@_V_55"]),  # side of chest(R)
+    (r"боль\s+(?:в\s+)?(?:лев|прав)\w+\s+(?:стороне\s+)?(?:груд|бок)|колет\s+(?:в\s+)?(?:лев|прав)\w+\s+(?:бок|груд)",
+     ["E_53", "E_55_@_V_55"]),
+
+    # ── Chest wall pain / rib pain → Spontaneous rib fracture ────────────────
+    (r"rib\s+(?:pain|hurts|fractur|crack)|pain\w*\s+(?:in\s+)?(?:my\s+)?rib|(?:crack|broke)\w*\s+(?:a\s+)?rib",
+     ["E_53", "E_55_@_V_55", "E_216"]),  # chest + worse with movement
+    (r"(?:перелом|трещин)\w+\s+ребр|ребро\s+(?:болит|сломал)|боль.{0,10}ребр",
+     ["E_53", "E_55_@_V_55", "E_216"]),
+
+    # ── Barking cough → Croup ─────────────────────────────────────────────────
+    (r"barking\s+cough|croup|seal.{0,5}(?:like\s+)?cough|stridor\w*\s+(?:child|baby|infant|kid)",
+     ["E_201", "E_112"]),
+    (r"лающий\s+каш\w+|круп|каш\w+\s+(?:как\s+)?лай",
+     ["E_201", "E_112"]),
 ]
 
 # ─── BM25 synonym expansion (for fallback BM25 only) ─────────────────────────
@@ -206,7 +620,7 @@ def _extract_age_sex(text: str) -> Tuple[Optional[int], Optional[str]]:
 
 
 _NEGATION_RE = re.compile(
-    r"(?:не\s+|нет\s+|без\s+|отсутств\w+\s+|никак\w+\s+)"
+    r"(?:^|[\s,;.!?])(?:не\s+|нет\s+|без\s+|отсутств\w+\s+|никак\w+\s+|ни\s+)"
 )
 
 
