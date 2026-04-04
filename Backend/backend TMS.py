@@ -747,11 +747,85 @@ YELLOW_ZONE_DISEASES = {
     "Stable angina", "Tuberculosis",
 }
 
-def classify_zone(disease: str, score: float) -> str:
+# ─── Symptom-based red flags (safety layer) ──────────────────────────────────
+# These override the disease-based classification.
+# Medical triage depends on SYMPTOMS, not on what the model guessed.
+# If ANY of these evidences are present → force that zone regardless of diagnosis.
+
+RED_FLAG_EVIDENCES = {
+    # Stridor = airway obstruction → minutes to death
+    "E_112",
+    # Chest pain at rest → possible ACS
+    "E_14",
+    # Syncope / loss of consciousness
+    # "E_82" is dizziness which is yellow, not red
+}
+
+YELLOW_FLAG_EVIDENCES = {
+    # Fever (T≥38) — needs medical evaluation
+    "E_91",
+    # Pleuritic pain (pain on deep breathing) — pneumonia/PE marker
+    "E_220",
+    # Shortness of breath
+    "E_66",
+    # Dizziness / near-syncope
+    "E_82",
+    # Palpitations / tachycardia
+    "E_155",
+    # Repeated vomiting — dehydration risk
+    "E_211",
+}
+
+# Combinations that escalate to RED even if individual symptoms are only yellow
+RED_FLAG_COMBOS = [
+    # Fever + pleuritic pain = pneumonia until proven otherwise
+    {"E_91", "E_220"},
+    # Fever + shortness of breath = possible pneumonia/sepsis
+    {"E_91", "E_66"},
+    # Chest pain + sweating = ACS
+    {"E_14", "E_50"},
+    # Chest pain + radiation to left arm
+    {"E_14", "E_57_@_V_195"},
+    # Chest pain + radiation to jaw
+    {"E_14", "E_57_@_V_121"},
+    # Chest pain + nausea = ACS
+    {"E_14", "E_148"},
+]
+
+
+def classify_zone(disease: str, score: float, evidences: list = None) -> str:
+    """
+    Triage classification with symptom-based safety layer.
+
+    Priority order:
+      1. Red flag evidences / combos → "red" (regardless of diagnosis)
+      2. Yellow flag evidences → at least "yellow"
+      3. Disease name in RED_ZONE_DISEASES → "red"
+      4. Disease name in YELLOW_ZONE_DISEASES → "yellow"
+      5. Score thresholds → fallback
+    """
+    ev_set = set(evidences) if evidences else set()
+
+    # --- Safety layer: symptom-based flags OVERRIDE model output ---
+
+    # 1) Single red-flag symptoms
+    if ev_set & RED_FLAG_EVIDENCES:
+        return "red"
+
+    # 2) Red-flag COMBINATIONS (e.g. fever + pleuritic pain)
+    for combo in RED_FLAG_COMBOS:
+        if combo <= ev_set:  # combo is subset of patient evidences
+            return "red"
+
+    # 3) Any yellow-flag symptom → at least yellow
+    has_yellow_flag = bool(ev_set & YELLOW_FLAG_EVIDENCES)
+
+    # --- Disease-based classification ---
     if disease in RED_ZONE_DISEASES or score > 0.6:
         return "red"
-    if disease in YELLOW_ZONE_DISEASES or score > 0.5:
+    if disease in YELLOW_ZONE_DISEASES or score > 0.5 or has_yellow_flag:
         return "yellow"
+
     return "green"
 
 def get_all_patients_triage() -> list:
@@ -760,7 +834,8 @@ def get_all_patients_triage() -> list:
         cur = conn.cursor()
         cur.execute("""
             SELECT p.patient_id, p.full_name, p.city, p.created_at,
-                   d.disease_predict, d.score, d.created_at as diag_date
+                   d.disease_predict, d.score, d.created_at as diag_date,
+                   d.day_id
             FROM patients p
             LEFT JOIN diary_days d ON d.day_id = (
                 SELECT MAX(d2.day_id) FROM diary_days d2 WHERE d2.patient_id = p.patient_id
@@ -772,8 +847,19 @@ def get_all_patients_triage() -> list:
         for r in rows:
             disease = decrypt_field(r[4]) or ""
             score = r[5] or 0.0
+            day_id = r[7]
+
+            # Fetch stored evidences for symptom-based triage
+            evidences = []
+            if day_id:
+                cur.execute(
+                    "SELECT symptom_code FROM diary_symptoms WHERE day_id = %s",
+                    (day_id,),
+                )
+                evidences = [row[0] for row in cur.fetchall()]
+
             first_disease = disease.split(" ")[0] if disease else ""
-            zone = classify_zone(first_disease, score)
+            zone = classify_zone(first_disease, score, evidences=evidences)
             result.append({
                 "patient_id": r[0],
                 "full_name": decrypt_field(r[1]),
@@ -937,14 +1023,19 @@ async def analys_endpoint(body: AnalysRequest, user: dict = Depends(require_pati
         for name, sc in top3
     ]
 
-    zone = classify_zone(top1_name, top1_score)
+    zone = classify_zone(top1_name, top1_score, evidences=body.evidences)
+
+    # Override recommendation for red zone with urgent message
+    recommendation = disease_recommendations.get(top1_name, "Консультация врача обязательна.")
+    if zone == "red":
+        recommendation = "⚠️ СРОЧНО обратитесь к врачу или вызовите скорую помощь! " + recommendation
 
     return {
         "day": day,
         "diseaseName": top1_name,
         "diseaseLabel": disease_labels.get(top1_name, top1_name),
         "doctor": disease_doctors.get(top1_name, "Терапевт"),
-        "recommendation": disease_recommendations.get(top1_name, "Консультация врача обязательна."),
+        "recommendation": recommendation,
         "slices": slices,
         "score": top1_score,
         "zone": zone,
@@ -1015,12 +1106,45 @@ async def next_questions_endpoint(
         top_n=body.n,
     )
     top3 = sklearn_predict(body.evidences, age=body.age, sex=body.sex, top_n=3)
+
+    # Safety layer: check current evidences for critical symptoms
+    ev_set = set(body.evidences) if body.evidences else set()
+    critical_alert = None
+
+    if "E_112" in ev_set:
+        # Stridor = airway obstruction — life-threatening
+        critical_alert = {
+            "level": "red",
+            "message": "⚠️ СТРИДОР (шумное дыхание на вдохе) — признак обструкции дыхательных путей. "
+                       "Немедленно вызовите скорую помощь (103)!",
+        }
+    elif ev_set & RED_FLAG_EVIDENCES:
+        critical_alert = {
+            "level": "red",
+            "message": "⚠️ Обнаружены опасные симптомы. Рекомендуется срочная консультация врача или скорая помощь.",
+        }
+    else:
+        for combo in RED_FLAG_COMBOS:
+            if combo <= ev_set:
+                critical_alert = {
+                    "level": "red",
+                    "message": "⚠️ Сочетание симптомов указывает на возможное неотложное состояние. "
+                               "Обратитесь к врачу как можно скорее.",
+                }
+                break
+
+    top1_name = top3[0][0] if top3 else ""
+    top1_score = top3[0][1] if top3 else 0.0
+    zone = classify_zone(top1_name, top1_score, evidences=body.evidences)
+
     return {
         "questions": questions,
         "current_top3": [
             {"disease": name, "label": disease_labels.get(name, name), "score": round(sc, 3)}
             for name, sc in top3
         ],
+        "zone": zone,
+        "critical_alert": critical_alert,
     }
 
 

@@ -205,17 +205,34 @@ def _extract_age_sex(text: str) -> Tuple[Optional[int], Optional[str]]:
     return age, sex
 
 
+_NEGATION_RE = re.compile(
+    r"(?:не\s+|нет\s+|без\s+|отсутств\w+\s+|никак\w+\s+)"
+)
+
+
+def _is_negated(text: str, match_start: int) -> bool:
+    """
+    Check if the match at position match_start is preceded by a negation word.
+    Looks back up to 15 characters for negation patterns like "не", "нет", "без".
+    """
+    window_start = max(0, match_start - 15)
+    window = text[window_start:match_start]
+    return bool(_NEGATION_RE.search(window))
+
+
 def _vocab_extract(text: str) -> List[str]:
     """
     Direct vocabulary lookup: scan patient text for Russian symptom terms,
     return the corresponding DDXPlus evidence IDs.
     High precision — only returns IDs when pattern clearly matches.
+    Handles negation: "боль НЕ отдаёт в руку" → skip that evidence.
     """
     text_lower = text.lower()
     matched: Set[str] = set()
 
     for pattern, ev_ids in _VOCAB:
-        if re.search(pattern, text_lower):
+        m = re.search(pattern, text_lower)
+        if m and not _is_negated(text_lower, m.start()):
             matched.update(ev_ids)
 
     return list(matched)
