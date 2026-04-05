@@ -99,6 +99,40 @@ _VOCAB: List[Tuple[str, List[str]]] = [
     (r"давящ\w+\s+боль|тяжест\w+\s+в\s+груди|давит\s+(?:в\s+груди|на\s+грудь)|сжимающ\w+\s+боль|тяжесть.{0,10}груди",
      ["E_53", "E_54_@_V_183"]),  # pressing/heavy pain character
 
+    # ── Head pain / headache (RU) ────────────────────────────────────────────
+    (r"головн\w+\s+бол|болит\s+голов|голова\s+(?:бол|раскалыва|разламыва|гудит|трещит)|цефалги",
+     ["E_53", "E_55_@_V_89"]),  # headache → pain + forehead
+    (r"мигрен",
+     ["E_53", "E_55_@_V_89", "E_54_@_V_184", "E_99"]),  # migraine → pain + forehead + pulsating + history
+    (r"боль.{0,10}виск|висок.{0,10}бол|височн\w+\s+бол|стучит\s+в\s+виск",
+     ["E_53", "E_55_@_V_166"]),  # temple pain
+    (r"боль.{0,10}затылк|затылок.{0,10}бол|затылочн\w+\s+бол|ломит\s+затылок",
+     ["E_53", "E_55_@_V_124"]),  # occiput pain
+    (r"боль.{0,10}макушк|макушк\w+\s+бол|темечк|боль.{0,10}теменн",
+     ["E_53", "E_55_@_V_62"]),  # top of head pain
+    (r"(?:одн\w+\s+)?(?:сторон\w+\s+)?(?:головн\w+\s+бол|голов\w+\s+бол)|гемикрани|полголовы\s+бол|бол\w+\s+полголовы",
+     ["E_53", "E_55_@_V_166"]),  # unilateral headache → temple
+
+    # ── Pain character (RU) ──────────────────────────────────────────────────
+    (r"пульсир\w+\s+бол|пульсир\w+\s+головн|бол\w+\s+пульсир|пульсаци|стучит\s+в\s+голов",
+     ["E_54_@_V_184"]),  # pulsating pain
+    (r"остр\w+\s+бол|резк\w+\s+бол|режущ\w+\s+бол|кинжальн",
+     ["E_54_@_V_192"]),  # sharp pain
+    (r"колющ\w+\s+бол|колет|прокалыва",
+     ["E_54_@_V_179"]),  # stabbing / knife-like
+    (r"тупая\s+бол|ноющ\w+\s+бол|ноет|нудн\w+\s+бол",
+     ["E_54_@_V_154"]),  # dull / aching
+    (r"схваткообразн|спазм\w+\s+бол|бол\w+\s+спазм|бол\w+\s+как\s+схватк|судорожн\w+\s+бол",
+     ["E_54_@_V_182"]),  # cramping pain
+
+    # ── Photophobia / phonophobia / aura (RU) — map to available evidences ───
+    (r"светобоязн|фотофоби|свет\s+(?:раздража|бол|мешает|режет|невыносим)|(?:яркий|дневной)\s+свет.{0,10}(?:бол|невыносим|раздраж|мешает)|больно\s+смотреть\s+на\s+свет",
+     ["E_127", "E_99"]),  # light sensitivity → tears(proxy) + migraine history
+    (r"фонофоби|звук\w+\s+(?:раздража|мешает|невыносим|бол)|шум\s+(?:раздража|невыносим|мешает)|громк\w+\s+звук\w+\s+(?:бол|невыносим)",
+     ["E_99"]),  # sound sensitivity → migraine history (best proxy)
+    (r"аура|мелькани\w+\s+(?:перед|в)\s+глаз|зрительн\w+\s+нарушен|пятна\s+перед\s+глаз|вспышки\s+(?:перед|в)\s+глаз|мушки\s+перед\s+глаз|зигзаг\w+\s+(?:перед|в)\s+глаз",
+     ["E_99"]),  # visual aura → migraine history
+
     # ── Neurological / Musculoskeletal ─────────────────────────────────────────
     (r"нет\s+запаха|потеря.{0,10}(?:запаха|обоняния)|не\s+чувств\w+\s+запах|запах\s+пропал",
      ["E_103"]),  # loss of smell/olfaction
@@ -116,6 +150,40 @@ _VOCAB: List[Tuple[str, List[str]]] = [
      ["E_74"]),   # eye redness
     (r"лимфоузл\w+|лимфатическ\w+\s+узл|узл\w+\s+увеличен|шея.{0,15}(?:увеличен|опухл)",
      ["E_9"]),    # swollen lymph nodes
+
+    # ── Body locations (RU) — neck, back, knee, etc. ───────────────────────
+    (r"боль.{0,10}ше[еи]|шея.{0,10}бол|шейн\w+\s+бол|болит\s+шея",
+     ["E_53", "E_55_@_V_26"]),  # neck pain → back of neck
+    (r"боль.{0,10}(?:спин|поясниц)|спина.{0,10}бол|поясниц\w+\s+бол|болит\s+спина|прострел.{0,10}спин|радикулит|люмбаго",
+     ["E_53", "E_55_@_V_40"]),  # back/lumbar pain
+    (r"боль.{0,10}колен|колено.{0,10}бол|коленн\w+\s+бол|болит\s+колено|колени\s+бол",
+     ["E_53", "E_55_@_V_92"]),  # knee pain
+    (r"боль.{0,10}плеч|плечо.{0,10}бол|плечев\w+\s+бол|болит\s+плечо",
+     ["E_53", "E_55_@_V_194"]),  # shoulder pain (R)
+    (r"боль.{0,10}лопатк|лопатк\w+.{0,10}бол|между\s+лопатк",
+     ["E_53", "E_55_@_V_127"]),  # scapula pain
+    (r"боль.{0,10}пах|пах.{0,10}бол|паховая\s+бол",
+     ["E_53", "E_55_@_V_16"]),  # groin pain
+
+    # ── General symptoms (RU) — anxiety, sleep, irritability, etc. ────────
+    (r"тревог\w+|тревожност|беспокой\w+|волнуюсь|паник\w+(?!\s+атак)",
+     ["E_16"]),   # anxiety
+    (r"плохой\s+сон|бессонниц|не\s+высыпаюсь|не\s+могу\s+заснуть|нарушени\w+\s+сн",
+     ["E_89"]),   # non-restful sleep
+    (r"раздражител|раздражён|раздражаюсь|вспыльчив|перепады\s+настроен",
+     ["E_114"]),  # irritability / mood instability
+    (r"набрал\s+вес|поправил\w+|прибавил\s+в\s+вес|располнел|потолстел",
+     ["E_96"]),   # weight gain
+    (r"(?:высок\w+\s+)?давлени\w+|гипертони|(?:^|\s)ад\s+\d|повышенн\w+\s+давлен",
+     ["E_102"]),  # high blood pressure
+    (r"диабет|сахарн\w+\s+диабет",
+     ["E_69"]),   # diabetes
+    (r"курю|курильщик|курит|курени",
+     ["E_79"]),   # smoking
+    (r"храп|апноэ\s+сна|остановк\w+\s+дыхани\w+\s+(?:во\s+сне|ночью)",
+     ["E_23"]),   # sleep apnea
+    (r"травм\w+\s+голов|удар.{0,10}голов|сотрясени",
+     ["E_185"]),  # head trauma
 
     # ── History / Context ─────────────────────────────────────────────────────
     (r"контакт\s+с\s+больн|заразил|больн\w+\s+в\s+семье|общался\s+с\s+больн",
@@ -135,9 +203,11 @@ _VOCAB: List[Tuple[str, List[str]]] = [
     # ══════════════════════════════════════════════════════════════════════════
 
     # ── Head / Neuro (EN) ─────────────────────────────────────────────────────
-    (r"headache|head\s*ache|head.{0,5}(?:hurts|pain|pounding|throbbing)|migraine",
+    (r"headache|head\s*ache|head.{0,5}(?:hurts|pain|pounding|throbbing)",
      ["E_53", "E_55_@_V_89"]),  # headache → pain + forehead/head location
-    (r"visual\s+disturbance|blurr\w+\s+vision|see\w*\s+spots|aura|light\s+sensitiv|photophob",
+    (r"migraine",
+     ["E_53", "E_55_@_V_89", "E_54_@_V_184", "E_99"]),  # migraine → pain + forehead + pulsating + history
+    (r"visual\s+disturbance|blurr\w+\s+vision|see\w*\s+spots",
      ["E_53"]),   # visual symptoms with pain context
     (r"dizz\w+|lightheaded|vertigo|feel\w*\s+faint",
      ["E_82"]),   # dizziness
@@ -219,6 +289,68 @@ _VOCAB: List[Tuple[str, List[str]]] = [
      ["E_9"]),    # swollen lymph nodes
     (r"(?:lost|loss).{0,10}(?:smell|taste)|can'?t\s+smell",
      ["E_103"]),  # loss of smell
+
+    # ── Head locations (EN) — temple, occiput, top of head ──────────────────
+    (r"temple\s+(?:pain|ache|headache)|pain\s+(?:in|at)\s+(?:my\s+)?temple|temporal\s+(?:pain|headache)",
+     ["E_53", "E_55_@_V_166"]),  # temple pain
+    (r"(?:back|base)\s+of\s+(?:my\s+)?head|occiput\w*\s+(?:pain|headache)|occipital",
+     ["E_53", "E_55_@_V_124"]),  # occiput pain
+    (r"top\s+of\s+(?:my\s+)?head|(?:pain|ache)\s+(?:on\s+)?top\s+of\s+head|vertex\s+(?:pain|headache)",
+     ["E_53", "E_55_@_V_62"]),  # top of head pain
+    (r"one\s+side.{0,10}head|half\s+(?:of\s+)?(?:my\s+)?head|unilateral\s+headache|hemicrani",
+     ["E_53", "E_55_@_V_166"]),  # unilateral headache → temple
+
+    # ── Migraine-specific (EN) ───────────────────────────────────────────────
+    (r"(?:history\s+of|had|get|suffer\w*\s+from)\s+migraine|migraine\s+(?:runs|in\s+(?:my\s+)?family)|diagnosed\s+(?:with\s+)?migraine|chronic\s+migraine",
+     ["E_99"]),   # migraine history
+    (r"light\s+sensitiv|photophob|(?:bright\s+)?light\s+(?:hurts|bother|makes?\s+(?:it\s+)?worse)|eyes?\s+(?:hurt|sensitive).{0,10}light",
+     ["E_127", "E_99"]),  # light sensitivity → tears(proxy) + migraine
+    (r"sound\s+sensitiv|phonophob|noise\s+(?:hurts|bother|makes?\s+(?:it\s+)?worse)|sensitiv\w+\s+to\s+(?:noise|sound)",
+     ["E_99"]),   # sound sensitivity → migraine
+    (r"visual\s+aura|seeing\s+(?:zigzag|flash|spark|spot)|flash\w*\s+(?:of\s+)?light.{0,10}(?:before|eye)|scotoma",
+     ["E_99"]),   # visual aura → migraine
+
+    # ── Pain character (EN) ──────────────────────────────────────────────────
+    (r"throb\w+\s+(?:pain|head|ache)|puls\w+\s+(?:pain|head|ache)|pounding\s+(?:pain|head|ache)|(?:pain|head|ache)\s+(?:is\s+)?(?:throbbing|pulsating|pounding)",
+     ["E_54_@_V_184"]),  # pulsating
+    (r"sharp\s+(?:pain|stab)|stabbing\s+(?:pain|sensation)|knife.?like\s+pain|lancinating",
+     ["E_54_@_V_192"]),  # sharp
+    (r"dull\s+(?:pain|ache)|aching\s+(?:pain|sensation)|(?:pain|ache)\s+(?:is\s+)?dull",
+     ["E_54_@_V_154"]),  # dull / tedious
+    (r"cramp\w+\s+(?:pain|sensation)|cramping|spasm\w*\s+(?:pain|of\s+pain)",
+     ["E_54_@_V_182"]),  # cramping
+
+    # ── Body locations (EN) ──────────────────────────────────────────────────
+    (r"neck\s+(?:pain|ache|hurts|stiff)|stiff\s+neck|pain\s+in\s+(?:my\s+)?neck",
+     ["E_53", "E_55_@_V_26"]),  # neck pain
+    (r"(?:back|lower\s+back|lumbar)\s+(?:pain|ache|hurts)|pain\s+in\s+(?:my\s+)?(?:back|lower\s+back)|lumbago|sciatica",
+     ["E_53", "E_55_@_V_40"]),  # back/lumbar pain
+    (r"knee\s+(?:pain|ache|hurts)|pain\s+in\s+(?:my\s+)?knee",
+     ["E_53", "E_55_@_V_92"]),  # knee pain
+    (r"shoulder\s+(?:pain|ache|hurts)|pain\s+in\s+(?:my\s+)?shoulder",
+     ["E_53", "E_55_@_V_194"]),  # shoulder pain
+    (r"groin\s+(?:pain|ache|hurts)|pain\s+in\s+(?:my\s+)?groin",
+     ["E_53", "E_55_@_V_16"]),  # groin pain
+
+    # ── General symptoms (EN) ────────────────────────────────────────────────
+    (r"anxi\w+|(?:feel\w*\s+)?nervous|worried|restless|(?:feel\w*\s+)?uneasy",
+     ["E_16"]),   # anxiety
+    (r"(?:can'?t|trouble|difficulty|hard\s+time)\s+sleep\w*|insomnia|sleep\s+(?:poorly|badly|terrible)|(?:non|un).?restful\s+sleep",
+     ["E_89"]),   # non-restful sleep
+    (r"irritabl\w+|mood\s+swing|(?:very\s+)?(?:moody|cranky|snappy|short.?tempered)",
+     ["E_114"]),  # irritability
+    (r"gain\w*\s+weight|(?:put|putting)\s+on\s+weight|weight\s+gain",
+     ["E_96"]),   # weight gain
+    (r"high\s+blood\s+pressure|hypertension|(?:bp|blood\s+pressure)\s+(?:is\s+)?(?:high|elevated)",
+     ["E_102"]),  # high blood pressure
+    (r"diabet\w+|(?:type\s+)?[12]\s+diabet\w*|(?:high|elevated)\s+(?:blood\s+)?sugar",
+     ["E_69"]),   # diabetes
+    (r"(?:i\s+)?smok\w+|(?:am\s+a\s+)?smoker|(?:pack|cigarette)\w*\s+(?:a|per)\s+day",
+     ["E_79"]),   # smoking
+    (r"sleep\s+apnea|snor\w+\s+(?:loudly|heavily)|stop\w*\s+breath\w+\s+(?:while|during|in)\s+sleep",
+     ["E_23"]),   # sleep apnea
+    (r"head\s+(?:trauma|injury)|concussion|hit\s+(?:my\s+)?head",
+     ["E_185"]),  # head trauma
 
     # ── History / Context (EN) ────────────────────────────────────────────────
     (r"contact\w*\s+(?:with\s+)?(?:sick|ill|infected)|(?:someone|person).{0,10}(?:sick|ill)\s+(?:around|near|at)",
@@ -566,6 +698,16 @@ _BM25_SYNONYMS: Dict[str, List[str]] = {
     "сердцебиение": ["palpitations"],
     "слабость": ["fatigue", "weakness"],
     "усталость": ["fatigue"],
+    "головная боль": ["headache", "cephalalgia"],
+    "мигрень": ["migraine", "headache"],
+    "болит голова": ["headache"],
+    "пульсирующая": ["throbbing", "pulsating"],
+    "светобоязнь": ["photophobia", "light sensitivity"],
+    "фотофобия": ["photophobia"],
+    "фонофобия": ["phonophobia"],
+    "аура": ["aura", "visual disturbance"],
+    "висок": ["temple", "temporal"],
+    "затылок": ["occiput", "occipital"],
 }
 
 
