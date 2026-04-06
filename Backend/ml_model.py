@@ -116,6 +116,76 @@ _GEO_EXCLUDED: set = {
 }
 
 
+# ─── Rule-based exclusion dictionary ─────────────────────────────────────────
+# Each rule: if ALL `require` evidences present AND NONE of `absent` evidences
+# present → multiply listed diseases' probability by `penalty`.
+_EXCLUSION_RULES: list = [
+    {
+        # Headache without chest symptoms → Boerhaave is nonsensical.
+        # Boerhaave = esophageal rupture, requires chest/epigastric pain + vomiting.
+        "require": {"E_55_@_V_89"},          # headache present
+        "absent":  {"E_55_@_V_101", "E_14"}, # no chest pain
+        "diseases": ["Boerhaave"],
+        "penalty": 0.05,
+    },
+    {
+        # Vomiting (E_211) without chest pain → Boerhaave extremely unlikely.
+        "require": {"E_211"},
+        "absent":  {"E_55_@_V_101", "E_14"},
+        "diseases": ["Boerhaave"],
+        "penalty": 0.10,
+    },
+    {
+        # Sore throat without chest symptoms → not ACS.
+        "require": {"E_97"},
+        "absent":  {"E_14", "E_57"},          # no chest pain, no radiation
+        "diseases": ["Possible NSTEMI / STEMI", "Unstable angina"],
+        "penalty": 0.15,
+    },
+]
+
+# ─── Bayesian age/sex priors ─────────────────────────────────────────────────
+# Soft penalties for diseases epidemiologically near-impossible in a demographic.
+# age_range is inclusive [lo, hi]. sex: "M"/"F"/None (None = any).
+_AGE_SEX_PRIORS: list = [
+    {
+        # Boerhaave: median age ~60, exceedingly rare under 30
+        "age_range": (0, 30),
+        "sex": None,
+        "diseases": ["Boerhaave"],
+        "penalty": 0.10,
+    },
+    {
+        # ACS (MI/unstable angina): very rare under 30 without risk factors
+        "age_range": (0, 30),
+        "sex": None,
+        "diseases": ["Possible NSTEMI / STEMI", "Unstable angina"],
+        "penalty": 0.20,
+    },
+    {
+        # ACS in women under 40: even rarer
+        "age_range": (0, 40),
+        "sex": "F",
+        "diseases": ["Possible NSTEMI / STEMI", "Unstable angina"],
+        "penalty": 0.30,
+    },
+    {
+        # Pulmonary embolism: rare under 20
+        "age_range": (0, 20),
+        "sex": None,
+        "diseases": ["Pulmonary embolism"],
+        "penalty": 0.25,
+    },
+    {
+        # COPD: essentially absent under 35 without alpha-1 antitrypsin deficiency
+        "age_range": (0, 35),
+        "sex": None,
+        "diseases": ["COPD"],
+        "penalty": 0.10,
+    },
+]
+
+
 def sklearn_predict(
     evidences: List[str],
     age: int = 25,
@@ -148,24 +218,40 @@ def sklearn_predict(
     filtered = {d: p for d, p in pooled.items() if d not in _GEO_EXCLUDED}
 
     # ─── Clinical correction rules ────────────────────────────────────────
-    # These adjust probabilities when the model ignores known clinical logic.
     ev_set = set(evidences)
 
     # Rule 1: Pleuritic pain (E_220) is AGAINST MI / ACS.
-    # If patient has pain that worsens on deep breathing → pericarditis/pleurisy,
-    # NOT myocardial infarction. Penalize ACS probability.
     if "E_220" in ev_set:
         for acs_name in ("Possible NSTEMI / STEMI", "Unstable angina"):
             if acs_name in filtered:
                 filtered[acs_name] *= 0.4  # 60% penalty
 
     # Rule 2: GERD context (E_173 present) — penalize PE and pulmonary edema.
-    # Burning from stomach + bitter taste is GI, not cardiopulmonary.
     if "E_173" in ev_set and "E_14" not in ev_set:
         for noise_name in ("Pulmonary embolism", "Acute pulmonary edema",
                            "Spontaneous pneumothorax"):
             if noise_name in filtered:
                 filtered[noise_name] *= 0.3  # 70% penalty
+
+    # ─── Rule-based exclusion dictionary ──────────────────────────────────
+    # Each rule: if ALL `require` evidences are present AND NONE of `absent`
+    # evidences are present → penalize listed diseases by `penalty` factor.
+    for rule in _EXCLUSION_RULES:
+        if rule["require"] <= ev_set and not (rule["absent"] & ev_set):
+            for disease in rule["diseases"]:
+                if disease in filtered:
+                    filtered[disease] *= rule["penalty"]
+
+    # ─── Bayesian age/sex priors ──────────────────────────────────────────
+    # Penalize diseases that are epidemiologically near-impossible for the
+    # patient's demographic. These are soft priors (penalties, not hard blocks).
+    for prior in _AGE_SEX_PRIORS:
+        age_lo, age_hi = prior["age_range"]
+        sex_match = prior.get("sex")  # None = any sex
+        if age_lo <= age <= age_hi and (sex_match is None or sex == sex_match):
+            for disease in prior["diseases"]:
+                if disease in filtered:
+                    filtered[disease] *= prior["penalty"]
 
     # Renormalize after adjustments
     total = sum(filtered.values())
@@ -192,14 +278,17 @@ def find_discriminative_evidences(
     sex: str = "M",
     top_n: int = 3,
     min_shift: float = 0.01,
+    confidence_threshold: float = 0.60,
 ) -> List[dict]:
     """
     Find the top_n most discriminative binary evidences to ask about next.
     Uses probability-shift method: for each candidate evidence, compute how much
-    setting it to 1 would shift the top-3 disease probabilities.
+    setting it to 1 would shift the top-1 disease probability.
+
+    If the top-1 diagnosis already has confidence >= confidence_threshold,
+    the model is confident enough — no follow-up questions needed.
 
     min_shift: minimum probability shift to include a question (filters noise).
-    Questions with shift < 1% are clinically irrelevant and confuse the user.
 
     Returns list of {evidence_id, question_en, question_ru, question_kk, score}.
     """
@@ -210,6 +299,15 @@ def find_discriminative_evidences(
     base_proba = _clf.predict_proba(base_vec.reshape(1, -1))[0]
     top3_idx = np.argsort(base_proba)[::-1][:3]
 
+    # If top-1 confidence is already high, no clarification needed
+    top1_conf = float(base_proba[top3_idx[0]])
+    if top1_conf >= confidence_threshold:
+        logger.info(
+            "skip follow-up questions: top-1 confidence %.2f >= %.2f",
+            top1_conf, confidence_threshold,
+        )
+        return []
+
     # Only consider binary evidences not yet known
     candidates = [
         ev_id for ev_id, meta in EVIDENCES_META.items()
@@ -218,6 +316,18 @@ def find_discriminative_evidences(
         and ev_id in _feat_idx
         and not meta.get("is_antecedent", False)  # skip history/family questions
     ]
+
+    # Clinical filter: some evidences should only come from patient text,
+    # never be asked as follow-up questions (clinically inappropriate).
+    _NEVER_ASK = {
+        # E_211 (repeated vomiting): asking "did you vomit multiple times?" when
+        # the patient only said "тошнит немного" (mild nausea) is clinically
+        # inappropriate. E_148 covers both nausea and vomiting — we can't
+        # distinguish. E_211 should only be set by retrieval.py when the patient
+        # explicitly describes repeated vomiting.
+        "E_211",
+    }
+    candidates = [c for c in candidates if c not in _NEVER_ASK]
 
     if not candidates:
         return []
@@ -229,10 +339,14 @@ def find_discriminative_evidences(
 
     probas = _clf.predict_proba(batch)  # (n_candidates, n_classes)
 
-    base_top3 = base_proba[top3_idx]
+    # Score by how much each candidate shifts the top-1 diagnosis probability.
+    # This ensures follow-up questions are relevant to the leading diagnosis,
+    # not just any disease in the top-3.
+    top1_idx = top3_idx[0]
+    base_top1_p = base_proba[top1_idx]
     scores = []
     for i, ev_id in enumerate(candidates):
-        shift = float(np.max(np.abs(probas[i][top3_idx] - base_top3)))
+        shift = abs(float(probas[i][top1_idx]) - base_top1_p)
         if shift >= min_shift:
             scores.append((ev_id, shift))
 
