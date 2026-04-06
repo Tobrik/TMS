@@ -79,9 +79,23 @@ def build_feature_vector(evidences: List[str], age: int = 25, sex: str = "M") ->
     if sex.upper() == "M" and "__SEX_M__" in _feat_idx:
         vec[_feat_idx["__SEX_M__"]] = 1.0
 
+    matched = []
+    dropped = []
     for ev in evidences:
         if ev in _feat_idx:
             vec[_feat_idx[ev]] = 1.0
+            matched.append(ev)
+        else:
+            dropped.append(ev)
+
+    active_count = int(np.sum(vec > 0))
+    logger.info(
+        "build_feature_vector: age=%s sex=%s | %d evidences in, %d matched, %d dropped, %d features active",
+        age, sex, len(evidences), len(matched), len(dropped), active_count,
+    )
+    if dropped:
+        logger.warning("DROPPED evidences (not in feature_names): %s", dropped)
+    logger.info("MATCHED evidences -> feature indices: %s", {ev: _feat_idx[ev] for ev in matched})
 
     return vec
 
@@ -205,8 +219,17 @@ def sklearn_predict(
         logger.error("sklearn model not available for prediction")
         return [("Unknown", 0.0)]
 
+    logger.info("sklearn_predict called: evidences=%s age=%s sex=%s", evidences, age, sex)
+
     vec = build_feature_vector(evidences, age, sex)
     proba = _clf.predict_proba(vec.reshape(1, -1))[0]
+
+    # Log raw RF output (top-5 before any corrections)
+    raw_top5 = sorted(
+        [(LABEL_CLASSES[i], float(proba[i])) for i in range(len(proba))],
+        key=lambda x: x[1], reverse=True,
+    )[:5]
+    logger.info("RF raw top-5: %s", [(d, f"{p:.4f}") for d, p in raw_top5])
 
     # Pool probabilities within clinical groups
     pooled: dict = {}
@@ -259,7 +282,9 @@ def sklearn_predict(
         filtered = {d: p / total for d, p in filtered.items()}
 
     sorted_results = sorted(filtered.items(), key=lambda x: x[1], reverse=True)
-    return sorted_results[:top_n]
+    top = sorted_results[:top_n]
+    logger.info("sklearn_predict FINAL top-%d: %s", top_n, [(d, f"{p:.4f}") for d, p in top])
+    return top
 
 
 def validate_evidences(evidences: List[str]) -> Tuple[List[str], List[str]]:
