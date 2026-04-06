@@ -272,6 +272,86 @@ def validate_evidences(evidences: List[str]) -> Tuple[List[str], List[str]]:
     return valid, invalid
 
 
+# ─── Disease → relevant evidences mapping ────────────────────────────────────
+# Precomputed from RF: for each disease, the top-K binary evidences whose
+# presence causes the largest increase in P(disease).
+# Built once at import time; used to filter candidates in follow-up questions.
+_DISEASE_RELEVANT_EVIDENCES: dict = {}  # disease_name → set of evidence IDs
+_RELEVANCE_TOP_K = 30  # keep top-30 evidences per disease
+
+
+def _build_disease_evidence_map() -> dict:
+    """
+    For each disease class, probe the RF model to find which binary evidences
+    are most relevant (largest probability increase when feature is turned on).
+    Returns: {disease_name: set(ev_id, ...)}.
+    """
+    if _clf is None or N_FEATURES == 0:
+        return {}
+
+    # Identify binary evidence features (exclude __AGE__, __SEX_M__, categorical)
+    binary_evs = [
+        ev_id for ev_id, meta in EVIDENCES_META.items()
+        if meta.get("data_type") == "B"
+        and ev_id in _feat_idx
+    ]
+    if not binary_evs:
+        return {}
+
+    # Base prediction on empty patient (only default age/sex)
+    base_vec = build_feature_vector([], age=25, sex="M")
+    base_proba = _clf.predict_proba(base_vec.reshape(1, -1))[0]
+
+    # Batch: one row per binary evidence with that feature set to 1
+    batch = np.tile(base_vec, (len(binary_evs), 1))
+    for i, ev_id in enumerate(binary_evs):
+        batch[i, _feat_idx[ev_id]] = 1.0
+    probas = _clf.predict_proba(batch)  # (n_binary, n_classes)
+
+    # For each disease, collect (ev_id, delta_prob) and keep top-K
+    result = {}
+    for cls_idx, disease in enumerate(LABEL_CLASSES):
+        base_p = float(base_proba[cls_idx])
+        deltas = []
+        for i, ev_id in enumerate(binary_evs):
+            delta = float(probas[i][cls_idx]) - base_p
+            if delta > 0.001:  # only positive shifts
+                deltas.append((ev_id, delta))
+        deltas.sort(key=lambda x: x[1], reverse=True)
+        result[disease] = {ev_id for ev_id, _ in deltas[:_RELEVANCE_TOP_K]}
+
+    logger.info(
+        "disease→evidence map built: %d diseases, avg %.0f evidences each",
+        len(result),
+        sum(len(v) for v in result.values()) / max(len(result), 1),
+    )
+    return result
+
+
+try:
+    _DISEASE_RELEVANT_EVIDENCES = _build_disease_evidence_map()
+except Exception as e:
+    logger.error("Failed to build disease→evidence map: %s", e)
+
+
+# ─── Prerequisite logic for dependent evidences ─────────────────────────────
+# E_55 (pain location) and E_57 (pain radiation) are child evidences of E_53
+# (pain present). E_54 (pain character) also depends on E_53.
+# Don't ask these until the parent is confirmed.
+_EVIDENCE_PREREQUISITES: dict = {
+    # child_evidence_prefix → parent evidence that must be present
+    "E_55": "E_53",   # pain location requires pain present
+    "E_57": "E_53",   # pain radiation requires pain present
+    "E_54": "E_53",   # pain character requires pain present
+}
+
+
+# ─── Clinical filter: evidences that should never be asked as follow-ups ────
+_NEVER_ASK = {
+    "E_211",  # repeated vomiting — only from patient text, not as question
+}
+
+
 def find_discriminative_evidences(
     evidences: List[str],
     age: int = 25,
@@ -282,13 +362,17 @@ def find_discriminative_evidences(
 ) -> List[dict]:
     """
     Find the top_n most discriminative binary evidences to ask about next.
-    Uses probability-shift method: for each candidate evidence, compute how much
-    setting it to 1 would shift the top-1 disease probability.
+
+    Filtering pipeline:
+      1. Only binary evidences not yet known
+      2. Prerequisite check: skip child evidences (E_55, E_57, E_54) if parent
+         (E_53) is not yet confirmed
+      3. Relevance filter: only consider evidences relevant to current top-3
+         diagnoses (from precomputed disease→evidence map)
+      4. Score by probability shift on top-1 disease
 
     If the top-1 diagnosis already has confidence >= confidence_threshold,
-    the model is confident enough — no follow-up questions needed.
-
-    min_shift: minimum probability shift to include a question (filters noise).
+    no follow-up questions needed.
 
     Returns list of {evidence_id, question_en, question_ru, question_kk, score}.
     """
@@ -308,26 +392,45 @@ def find_discriminative_evidences(
         )
         return []
 
-    # Only consider binary evidences not yet known
+    ev_set = set(evidences)
+
+    # Step 1: Only consider binary evidences not yet known
     candidates = [
         ev_id for ev_id, meta in EVIDENCES_META.items()
         if meta.get("data_type") == "B"
-        and ev_id not in evidences
+        and ev_id not in ev_set
         and ev_id in _feat_idx
-        and not meta.get("is_antecedent", False)  # skip history/family questions
+        and not meta.get("is_antecedent", False)
+        and ev_id not in _NEVER_ASK
     ]
 
-    # Clinical filter: some evidences should only come from patient text,
-    # never be asked as follow-up questions (clinically inappropriate).
-    _NEVER_ASK = {
-        # E_211 (repeated vomiting): asking "did you vomit multiple times?" when
-        # the patient only said "тошнит немного" (mild nausea) is clinically
-        # inappropriate. E_148 covers both nausea and vomiting — we can't
-        # distinguish. E_211 should only be set by retrieval.py when the patient
-        # explicitly describes repeated vomiting.
-        "E_211",
-    }
-    candidates = [c for c in candidates if c not in _NEVER_ASK]
+    # Step 2: Prerequisite check — skip children whose parent is absent
+    def _prereq_ok(ev_id: str) -> bool:
+        for prefix, parent in _EVIDENCE_PREREQUISITES.items():
+            if ev_id == parent:
+                return True  # parent itself is always ok to ask
+            if ev_id.startswith(prefix) and parent not in ev_set:
+                return False
+        return True
+
+    candidates = [c for c in candidates if _prereq_ok(c)]
+
+    # Step 3: Relevance filter — only evidences relevant to top-3 diagnoses
+    if _DISEASE_RELEVANT_EVIDENCES:
+        top3_names = [LABEL_CLASSES[i] for i in top3_idx]
+        relevant = set()
+        for d_name in top3_names:
+            relevant |= _DISEASE_RELEVANT_EVIDENCES.get(d_name, set())
+            # Also check canonical group name
+            canonical = _GROUP_MAP.get(d_name, d_name)
+            if canonical != d_name:
+                relevant |= _DISEASE_RELEVANT_EVIDENCES.get(canonical, set())
+        candidates = [c for c in candidates if c in relevant]
+        logger.info(
+            "relevance filter: %d candidates for top-3 %s",
+            len(candidates),
+            [f"{LABEL_CLASSES[i]}({base_proba[i]:.2f})" for i in top3_idx],
+        )
 
     if not candidates:
         return []
@@ -339,9 +442,7 @@ def find_discriminative_evidences(
 
     probas = _clf.predict_proba(batch)  # (n_candidates, n_classes)
 
-    # Score by how much each candidate shifts the top-1 diagnosis probability.
-    # This ensures follow-up questions are relevant to the leading diagnosis,
-    # not just any disease in the top-3.
+    # Score by how much each candidate shifts the top-1 diagnosis probability
     top1_idx = top3_idx[0]
     base_top1_p = base_proba[top1_idx]
     scores = []
@@ -484,87 +585,3 @@ _QUESTION_TRANSLATIONS: dict = {
 }
 
 
-_FEW_SHOT_EXAMPLES = '''
-EXAMPLES (study these carefully before extracting):
-
-Input: "I have a fever, runny nose, body aches, headache and have been sick for 2 days. Male, 28."
-Output: {"age": 28, "sex": "M", "evidences": ["E_91", "E_94", "E_181", "E_175", "E_144", "E_53", "E_55_@_V_89"]}
-Reasoning: E_91=fever, E_94=chills/shivers, E_181=runny nose, E_175=general malaise+muscle aches, E_144=diffuse muscle pain, E_53=pain present, E_55_@_V_89=forehead pain(headache)
-
-Input: "У меня болит голова и температура 38, насморк, ломота в теле, болею 2 дня. Мужчина, 28 лет."
-Output: {"age": 28, "sex": "M", "evidences": ["E_91", "E_94", "E_181", "E_175", "E_144", "E_53", "E_55_@_V_89"]}
-Reasoning: E_91=температура/fever, E_94=ломота/chills, E_181=насморк/runny nose, E_175=общее недомогание, E_144=боль в мышцах, E_53=боль есть, E_55_@_V_89=головная боль/forehead
-
-Input: "Сильная боль в правом нижнем животе, тошнота, температура 37.8. Женщина, 22 года."
-Output: {"age": 22, "sex": "F", "evidences": ["E_91", "E_53", "E_55_@_V_87", "E_148"]}
-Reasoning: E_91=fever, E_53=pain present, E_55_@_V_87=right iliac fossa(lower right abdomen), E_148=nausea
-
-Input: "Chest pain radiating to left arm, sweating, shortness of breath. Male, 55."
-Output: {"age": 55, "sex": "M", "evidences": ["E_14", "E_57", "E_50", "E_66", "E_53", "E_155"]}
-Reasoning: E_14=chest pain at rest, E_57=pain radiates to another location, E_50=increased sweating, E_66=shortness of breath, E_53=pain present, E_155=palpitations/racing heart
-
-Input: "Сильная боль в груди отдаёт в левую руку, потею, трудно дышать. Мужчина 55 лет."
-Output: {"age": 55, "sex": "M", "evidences": ["E_14", "E_57", "E_50", "E_66", "E_53", "E_155"]}
-Reasoning: E_14=боль в груди в покое, E_57=боль иррадиирует, E_50=потливость, E_66=одышка, E_53=боль есть, E_155=сердцебиение
-
-Input: "Severe difficulty breathing, wheezing sound when exhaling, history of asthma. Female, 30."
-Output: {"age": 30, "sex": "F", "evidences": ["E_66", "E_214", "E_112", "E_124", "E_46"]}
-Reasoning: E_66=shortness of breath, E_214=wheezing on exhale, E_112=noisy breathing, E_124=asthma history, E_46=asthma attacks in past year
-
-Input: "Изжога, жжение от желудка поднимается к горлу, кислый привкус. Мужчина 40 лет."
-Output: {"age": 40, "sex": "M", "evidences": ["E_173", "E_53", "E_55_@_V_197"]}
-Reasoning: E_173=burning from stomach to throat with bitter taste, E_53=pain present, E_55_@_V_197=epigastric pain location
-
-Input: "Сильно болит горло, больно глотать, температура 38.5, увеличены лимфоузлы. 19 лет, женщина."
-Output: {"age": 19, "sex": "F", "evidences": ["E_97", "E_65", "E_91", "E_9"]}
-Reasoning: E_97=sore throat, E_65=difficulty swallowing, E_91=fever, E_9=swollen/painful lymph nodes
-
-Input: "Внезапное сильное сердцебиение, страх, онемение в руках, трудно дышать, всё прошло за 20 минут."
-Output: {"age": null, "sex": null, "evidences": ["E_155", "E_66", "E_82", "E_128"]}
-Reasoning: E_155=racing/palpitations, E_66=shortness of breath, E_82=lightheaded/dizzy/faint, E_128=suffocating episode that resolved
-'''
-
-
-def build_extraction_prompt() -> str:
-    """
-    Build a condensed system prompt listing all evidences for LLaMA NLP extractor.
-    Returns prompt string to be used in /extract_symptoms endpoint.
-    """
-    lines = [
-        "You are a medical symptom extractor for the DDXPlus medical dataset. "
-        "Your task is to map a patient's description to the correct evidence IDs from the list below.\n"
-        "CRITICAL RULES:\n"
-        "- Only use evidence IDs from the list below — do NOT invent IDs\n"
-        "- For pain location (E_55), you MUST use E_55_@_V_XX format with the correct value\n"
-        "- Common symptoms mapping: fever→E_91, chills/body aches→E_94+E_175+E_144, "
-        "runny nose→E_181, cough→E_201, sore throat→E_97, nausea→E_116, fatigue→E_89\n"
-        "- Headache = E_53 + E_55_@_V_89 (forehead) or E_55_@_V_25 (back of head)\n"
-        "- Do NOT include risk factors or history unless explicitly mentioned\n",
-        _FEW_SHOT_EXAMPLES,
-        "\nCOMPLETE EVIDENCE LIST:\n"
-    ]
-
-    for ev_id, meta in EVIDENCES_META.items():
-        q = meta.get("question_en", "")
-        dtype = meta.get("data_type", "B")
-        if dtype == "B":
-            lines.append(f"- {ev_id}: {q}")
-        else:
-            vals = meta.get("possible-values", [])
-            val_meanings = meta.get("value_meaning", {})
-            val_list = []
-            for v in vals[:10]:  # limit to avoid overly long prompt
-                meaning = val_meanings.get(v, {})
-                en = meaning.get("en", v) if isinstance(meaning, dict) else v
-                val_list.append(f"{v}={en}")
-            lines.append(f"- {ev_id}: {q} [values: {', '.join(val_list)}{'...' if len(vals) > 10 else ''}]")
-
-    lines.append(
-        "\nReturn ONLY a valid JSON object (no markdown, no explanation):\n"
-        '{"age": <integer or null>, "sex": "<M or F or null>", '
-        '"evidences": ["E_XX", "E_YY_@_V_ZZ", ...]}\n'
-        "- Only include evidences clearly present in the patient text\n"
-        "- If age/sex not mentioned, use null"
-    )
-
-    return "\n".join(lines)

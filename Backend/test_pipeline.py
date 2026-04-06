@@ -19,7 +19,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 sys.path.insert(0, str(Path(__file__).parent))
-from ml_model import sklearn_predict, build_extraction_prompt, LABEL_CLASSES, FEATURE_NAMES
+from ml_model import sklearn_predict, LABEL_CLASSES, FEATURE_NAMES
 
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
 GROQ_MODEL = "llama-3.3-70b-versatile"
@@ -65,11 +65,14 @@ TEST_CASES = [
 
 
 async def extract_evidences(text: str) -> dict:
-    """Call Groq to extract DDXPlus evidence tokens from free text."""
+    """Call Groq to extract DDXPlus evidence tokens from free text (legacy LLaMA path)."""
     if not GROQ_API_KEY:
         return {"error": "GROQ_API_KEY not set", "evidences": [], "age": 25, "sex": "M"}
 
-    system_prompt = build_extraction_prompt()
+    system_prompt = (
+        "You are a medical symptom extractor. Map patient descriptions to DDXPlus evidence IDs. "
+        "Return JSON: {\"age\": int, \"sex\": \"M\"/\"F\", \"evidences\": [\"E_XX\", ...]}"
+    )
 
     async with httpx.AsyncClient(timeout=30) as client:
         resp = await client.post(
@@ -223,7 +226,7 @@ async def main():
         print("  ~ Pipeline mostly works — some misses, review invalid tokens above")
     else:
         print("  ✗ Pipeline has issues — LLaMA is not mapping symptoms correctly")
-        print("    Check the system prompt in ml_model.py::build_extraction_prompt()")
+        print("    Check symptom extraction in retrieval.py vocabulary")
 
 
 if __name__ == "__main__":

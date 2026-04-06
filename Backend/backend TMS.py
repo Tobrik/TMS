@@ -29,7 +29,7 @@ from auth import (
     require_patient_or_doctor,
 )
 from crypto_utils import encrypt_field, decrypt_field
-from ml_model import sklearn_predict, build_extraction_prompt, validate_evidences, find_discriminative_evidences
+from ml_model import sklearn_predict, validate_evidences, find_discriminative_evidences
 
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
