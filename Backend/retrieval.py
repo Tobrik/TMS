@@ -198,6 +198,69 @@ _VOCAB: List[Tuple[str, List[str]]] = [
      ["E_106"]),  # heart failure history
 
     # ══════════════════════════════════════════════════════════════════════════
+    # ── KAZAKH (KK) patterns ─────────────────────────────────────────────────
+    # Top-20 symptoms in Kazakh with morphological variants (\w* for suffixes).
+    # ══════════════════════════════════════════════════════════════════════════
+
+    # ── Respiratory (KK) ─────────────────────────────────────────────────────
+    (r"жөтел\w*",
+     ["E_201"]),  # cough (жөтел, жөтеледі, жөтелім)
+    (r"қақырық\w*|ақ\s+қақырық|жасыл\s+қақырық|сары\s+қақырық",
+     ["E_77"]),   # sputum (қақырық)
+    (r"мұрын\w*\s+бітел\w*|мұрын\w*\s+ағ\w*|тұмау\w*",
+     ["E_181"]),  # nasal congestion / runny nose
+    (r"ентіг\w*|тыныс\s+ал\w*\s+қиын|дем\s+ал\w*\s+қиын|демікпе\w*",
+     ["E_66"]),   # shortness of breath / asthma
+    (r"тамақ\w*\s+ауыр\w*|тамағым\s+ауыр\w*|жұт\w+\s+ауыр\w*|тамақ\w*\s+ісін\w*",
+     ["E_97", "E_53", "E_55_@_V_148"]),  # sore throat
+    (r"түшкір\w*",
+     ["E_181"]),  # sneezing
+
+    # ── Fever / Systemic (KK) ────────────────────────────────────────────────
+    (r"қызба\w*|дене\s+қызу\w*|температура\w*\s+көтеріл\w*|ыстық\w*",
+     ["E_91"]),   # fever
+    (r"қалтыра\w*|дірілде\w*|суық\s+тиді|суық\s+ті\w*",
+     ["E_94"]),   # chills
+    (r"бұлшықет\w*\s+ауыр\w*|бүкіл\s+ден\w+\s+ауыр\w*|етім\s+ауыр\w*",
+     ["E_144"]),  # muscle pain
+    (r"әлсіздік\w*|шаршағыш\w*|шаршадым|күшім\s+жоқ|қуатсыз\w*",
+     ["E_175"]),  # fatigue / weakness
+    (r"терле\w*|көп\s+терлеймін|терлеп\s+кет\w*",
+     ["E_50"]),   # sweating
+
+    # ── Cardiovascular (KK) ──────────────────────────────────────────────────
+    (r"кеуде\w*\s+ауыр\w*|кеудем\s+ауыр\w*|кеуде\w*\s+қыс\w*|төс\w*\s+ауыр\w*",
+     ["E_14", "E_53", "E_55_@_V_101"]),  # chest pain
+    (r"жүрек\w*\s+соғ\w*|жүрегім\s+қатты\s+соғ\w*|тахикарди\w*|жүрек\w*\s+лүпілде\w*",
+     ["E_155"]),  # palpitations
+    (r"бас\w*\s+айнал\w*|басым\s+айнал\w*|бас\s+айналу",
+     ["E_82"]),   # dizziness
+    (r"есінен\s+тан\w*|естен\s+тан\w*|талып\s+қал\w*",
+     ["E_82"]),   # syncope
+
+    # ── Head / Neuro (KK) ────────────────────────────────────────────────────
+    (r"бас\w*\s+ауыр\w*|басым\s+ауыр\w*|бас\s+ауру\w*",
+     ["E_53", "E_55_@_V_89"]),  # headache
+    (r"жүйке\w*\s+ауыр\w*|ұйқысыздық\w*|ұйықтай\s+алма\w*",
+     ["E_89"]),   # insomnia
+
+    # ── Gastrointestinal (KK) ────────────────────────────────────────────────
+    (r"жүрек\w*\s+айн[уы]\w*|жүрегім\s+айн\w*|қалжыра\w*|лоқсы\w*",
+     ["E_148"]),  # nausea
+    (r"құс\w*|құстым|қайтар\w*",
+     ["E_148"]),  # vomiting
+    (r"іш\w*\s+ауыр\w*|ішім\s+ауыр\w*|құрсақ\w*\s+ауыр\w*",
+     ["E_53", "E_55_@_V_187"]),  # abdominal pain
+    (r"іш\w*\s+өт\w+|диарея\w*|сұйық\s+нәжіс",
+     ["E_51"]),   # diarrhea
+
+    # ── Skin (KK) ────────────────────────────────────────────────────────────
+    (r"бөртпе\w*|терід\w+\s+бөрт\w*|бөрту\w*",
+     ["E_129"]),  # rash
+    (r"қышы\w+|қышиды|қышима\w*",
+     ["E_129"]),  # itching
+
+    # ══════════════════════════════════════════════════════════════════════════
     # ── ENGLISH patterns ─────────────────────────────────────────────────────
     # Mirrors the Russian vocab above for English-language input.
     # ══════════════════════════════════════════════════════════════════════════
@@ -269,7 +332,7 @@ _VOCAB: List[Tuple[str, List[str]]] = [
      ["E_211"]),  # repeated vomiting
     (r"(?:stomach|belly|abdomen|abdominal)\s+(?:pain|ache|hurts|cramp)|pain\s+in\s+(?:my\s+)?(?:stomach|belly|abdomen)|(?:my\s+)?(?:stomach|belly|tummy)\s+hurts|belly\s+button|navel|umbilical|peri.?umbilical",
      ["E_53", "E_55_@_V_187"]),  # abdominal pain → pain + belly
-    (r"(?:lower|right)\s+right\s+(?:side|quadrant|abdomen)|right\s+lower\s+(?:side|quadrant|abdomen)|right\s+(?:side|flank).{0,10}(?:pain|hurts)|(?:pain|hurts).{0,10}(?:lower|right)\s+right|(?:moved|migrated).{0,15}(?:lower|right)\s+(?:right\s+)?side",
+    (r"(?:lower\s+)?right\s+(?:side|quadrant|abdomen)|right\s+lower\s+(?:side|quadrant|abdomen)|right\s+(?:side|flank).{0,10}(?:pain|hurts)|(?:pain|hurts).{0,10}(?:lower\s+)?right\s+(?:side|quadrant|abdomen)|(?:moved|migrated).{0,15}(?:lower\s+)?right\s+side",
      ["E_53", "E_55_@_V_87"]),  # RLQ pain → right iliac fossa (appendicitis)
     (r"diarr\w+|loose\s+stool|watery\s+stool|frequent\s+(?:stool|bowel)",
      ["E_51"]),   # diarrhea
@@ -708,13 +771,30 @@ _BM25_SYNONYMS: Dict[str, List[str]] = {
     "аура": ["aura", "visual disturbance"],
     "висок": ["temple", "temporal"],
     "затылок": ["occiput", "occipital"],
+    # Kazakh → English expansions for BM25
+    "жөтел": ["cough"],
+    "қызба": ["fever", "temperature"],
+    "бас ауру": ["headache"],
+    "жүрек айну": ["nausea"],
+    "құсу": ["vomit"],
+    "іш ауру": ["abdominal pain", "stomach"],
+    "ентігу": ["shortness breath", "dyspnea"],
+    "тамақ ауру": ["sore throat"],
+    "мұрын": ["nasal", "nose"],
+    "бөртпе": ["rash"],
+    "қышыма": ["itching"],
+    "әлсіздік": ["fatigue", "weakness"],
+    "бас айналу": ["dizziness"],
+    "кеуде ауру": ["chest pain"],
+    "терлеу": ["sweating"],
 }
 
 
 def _tokenize(text: str) -> List[str]:
     """Simple multilingual tokenizer: lowercase, split on non-alphanumeric."""
     text = text.lower()
-    tokens = re.findall(r"[a-zа-яёüöäéàèùâêîôûç]+", text)
+    # а-яё = Russian, әғқңөұүһі = Kazakh-specific Cyrillic
+    tokens = re.findall(r"[a-zа-яёәғқңөұүһіüöäéàèùâêîôûç]+", text)
     return tokens
 
 
@@ -738,6 +818,9 @@ def _extract_age_sex(text: str) -> Tuple[Optional[int], Optional[str]]:
         r"(\d+)\s*год[а]?\b",
         r"мне\s+(\d+)",
         r"возраст\s*[:\-]?\s*(\d+)",
+        r"(\d+)\s*жаст?\w*",          # KK: 25 жаста / жасымда
+        r"менің\s+жасым\s+(\d+)",      # KK: менің жасым 25
+        r"маған\s+(\d+)",              # KK: маған 25
         r"age\s*[:\-]?\s*(\d+)",
         r"(\d+)\s*years?\s*old",
         r"(\d+)[- ]year[- ]old",
@@ -750,8 +833,8 @@ def _extract_age_sex(text: str) -> Tuple[Optional[int], Optional[str]]:
                 age = candidate
                 break
 
-    female_re = r"женщина|женщине|женского|девушка|woman|female|girl"
-    male_re = r"мужчина|мужчине|мужского|парень|мальчик|man\b|male|boy"
+    female_re = r"женщина|женщине|женского|девушка|әйел|қыз|woman|female|girl"
+    male_re = r"мужчина|мужчине|мужского|парень|мальчик|ер\s*адам|ұл|(?<!\w)man(?!\w)|male|boy"
 
     if re.search(female_re, text, re.IGNORECASE):
         sex = "F"
@@ -761,35 +844,53 @@ def _extract_age_sex(text: str) -> Tuple[Optional[int], Optional[str]]:
     return age, sex
 
 
-_NEGATION_RE = re.compile(
-    r"(?:^|[\s,;.!?])(?:не\s+|нет\s+|без\s+|отсутств\w+\s+|никак\w+\s+|ни\s+)"
+_NEGATION_BEFORE_RE = re.compile(
+    r"(?:^|[\s,;.!?])(?:не\s+|нет\s+|без\s+|отсутств\w+\s+|никак\w+\s+|ни\s+|жоқ\s+|емес\s+)",
+    re.MULTILINE,
+)
+_NEGATION_AFTER_RE = re.compile(
+    r"^\w*\s+(?:нет|отсутствует|не\s+было|не\s+беспокоит|жоқ|емес)\b"
 )
 
 
-def _is_negated(text: str, match_start: int) -> bool:
+def _is_negated(text: str, match_start: int, match_end: int = 0) -> bool:
     """
-    Check if the match at position match_start is preceded by a negation word.
-    Looks back up to 15 characters for negation patterns like "не", "нет", "без".
+    Check if the match is negated — looks both backward and forward.
+    Backward: "не кашляю", "без температуры"
+    Forward:  "кашля нет", "жөтел жоқ"
     """
+    # Backward check (up to 15 chars before match)
     window_start = max(0, match_start - 15)
-    window = text[window_start:match_start]
-    return bool(_NEGATION_RE.search(window))
+    window_before = text[window_start:match_start]
+    if _NEGATION_BEFORE_RE.search(window_before):
+        return True
+
+    # Forward check (up to 25 chars after match end)
+    if match_end > 0:
+        window_after = text[match_end:match_end + 25]
+        if _NEGATION_AFTER_RE.search(window_after):
+            return True
+
+    return False
 
 
 def _vocab_extract(text: str) -> List[str]:
     """
-    Direct vocabulary lookup: scan patient text for Russian symptom terms,
+    Direct vocabulary lookup: scan patient text for symptom terms,
     return the corresponding DDXPlus evidence IDs.
     High precision — only returns IDs when pattern clearly matches.
-    Handles negation: "боль НЕ отдаёт в руку" → skip that evidence.
+    Uses finditer to check ALL occurrences: if at least one is not negated,
+    the symptom is present.  E.g. "кашля нет, но вчера кашлял" → cough present.
     """
     text_lower = text.lower()
     matched: Set[str] = set()
+    _flags = re.DOTALL | re.MULTILINE
 
     for pattern, ev_ids in _VOCAB:
-        m = re.search(pattern, text_lower)
-        if m and not _is_negated(text_lower, m.start()):
-            matched.update(ev_ids)
+        for m in re.finditer(pattern, text_lower, _flags):
+            if not _is_negated(text_lower, m.start(), m.end()):
+                matched.update(ev_ids)
+                break  # one non-negated hit is enough for this pattern
 
     return list(matched)
 
@@ -879,6 +980,11 @@ class EvidenceRetriever:
         if len(matched_set) < 4:
             try:
                 candidates = self.retrieve(text, top_k=top_k)
+                if candidates:
+                    logger.info(
+                        "BM25 scores (top-10): %s",
+                        [(eid, round(s, 2)) for eid, s in candidates[:10]],
+                    )
                 added = 0
                 for ev_id, score in candidates:
                     if score < bm25_fallback_threshold:
@@ -906,43 +1012,6 @@ class EvidenceRetriever:
             text[:60], len(evidences), age, sex, evidences,
         )
         return evidences, age, sex
-
-    def build_validation_prompt(self, text: str, candidates: List[Tuple[str, float]]) -> str:
-        """Build a LLaMA validation prompt (kept for optional hybrid mode)."""
-        lines = [
-            "You are a medical symptom validator. A patient described their symptoms below.\n"
-            "Based ONLY on what the patient explicitly says, select which of the following symptoms are PRESENT.\n\n"
-            f"Patient text: \"{text}\"\n\n"
-            "Candidate symptoms (only choose from this list):\n"
-        ]
-        for ev_id, _score in candidates:
-            meta = self._meta.get(ev_id, {})
-            q_en = meta.get("question_en", ev_id)
-            dtype = meta.get("data_type", "B")
-            if dtype == "B":
-                lines.append(f"- {ev_id}: {q_en}")
-            else:
-                vals = meta.get("possible-values", [])
-                vm = meta.get("value_meaning", {})
-                val_list = []
-                for v in vals[:6]:
-                    m = vm.get(v, {})
-                    en = m.get("en", v) if isinstance(m, dict) else v
-                    val_list.append(f"{v}={en}")
-                lines.append(
-                    f"- {ev_id}: {q_en} [values: {', '.join(val_list)}"
-                    f"{'...' if len(vals) > 6 else ''}]"
-                )
-        lines.append(
-            "\nRules:\n"
-            "- ONLY include evidences clearly mentioned or strongly implied by the patient text\n"
-            "- For categorical/multi-choice evidences, use E_XX_@_V_YY format\n"
-            "- Do NOT include evidences not supported by the text\n"
-            "- Extract age and sex if mentioned\n\n"
-            "Return ONLY valid JSON (no markdown):\n"
-            '{"age": <integer or null>, "sex": "<M or F or null>", "evidences": ["E_XX", ...]}'
-        )
-        return "\n".join(lines)
 
 
 # ─── Singleton ────────────────────────────────────────────────────────────────
