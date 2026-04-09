@@ -1014,6 +1014,19 @@ class EvidenceRetriever:
         return evidences, age, sex
 
 
+# ─── Public API ────────────────────────────────────────────────────────────────
+
+def vocab_extract(text: str) -> List[str]:
+    """Regex vocabulary extraction with negation handling.
+    Returns list of DDXPlus evidence IDs found in patient text."""
+    return _vocab_extract(text)
+
+
+def extract_age_sex(text: str) -> Tuple[Optional[int], Optional[str]]:
+    """Extract age and sex from patient text."""
+    return _extract_age_sex(text)
+
+
 # ─── Singleton ────────────────────────────────────────────────────────────────
 _retriever: EvidenceRetriever | None = None
 

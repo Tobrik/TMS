@@ -1265,21 +1265,24 @@ async def extract_symptoms_endpoint(
     user: dict = Depends(require_patient),
 ):
     """
-    3-layer symptom extraction pipeline:
-      Layer 1: Groq LLaMA 3.3 70B — NLP extraction with negation, uncertainty, implicit symptoms.
-      Layer 2: BM25 gap-filler — only if Layer 1 returns < 4 evidences.
-      Layer 3: QAEngine handles follow-up questions via /next_questions.
+    3-layer symptom extraction pipeline (all layers always run):
+      Layer 1: Groq LLaMA 3.3 70B — context, negation, implicit symptoms, temporal markers.
+      Layer 2: Vocab regex + BM25 — catches medical terms LLM may have normalized.
+      Layer 3: QAEngine picks up missing binary features via /next_questions.
+    Smart merge: union of all layers, filtered by LLM negation list.
     """
     import httpx as _httpx
-    from retrieval import get_retriever
+    from retrieval import get_retriever, vocab_extract, extract_age_sex
 
-    confirmed: List[str] = []
-    age: int = 25
-    sex: str = "M"
+    # ── Layer 1: Groq LLaMA 3.3 70B (context + negation + implicit) ─
+    llm_confirmed: List[str] = []
+    llm_negated: set = set()
+    llm_uncertain: List[str] = []
+    llm_age = None
+    llm_sex = None
     onset_days = None
     severity = None
 
-    # ── Layer 1: Groq LLaMA 3.3 70B NLP extraction ──────────────────
     groq_key = os.environ.get("GROQ_API_KEY", "")
     if groq_key:
         try:
@@ -1305,51 +1308,96 @@ async def extract_symptoms_endpoint(
                         raw = raw[4:]
                     raw = raw.strip()
                 layer1 = json.loads(raw)
-                confirmed = layer1.get("evidences", [])
-                age = layer1.get("age") or 25
-                sex = layer1.get("sex") or "M"
+                llm_confirmed = layer1.get("evidences", [])
+                llm_negated = set(layer1.get("negated", []))
+                llm_uncertain = layer1.get("uncertain", [])
+                llm_age = layer1.get("age")
+                llm_sex = layer1.get("sex")
                 onset_days = layer1.get("onset_days")
                 severity = layer1.get("severity")
-                logger.info("Layer1 Groq: %d evidences, age=%s sex=%s", len(confirmed), age, sex)
+                logger.info(
+                    "Layer1 LLM: %d confirmed, %d negated, %d uncertain, age=%s sex=%s",
+                    len(llm_confirmed), len(llm_negated), len(llm_uncertain),
+                    llm_age, llm_sex,
+                )
             else:
-                logger.error("Layer1 Groq HTTP %d: %s", resp.status_code, resp.text[:200])
+                logger.error("Layer1 LLM HTTP %d: %s", resp.status_code, resp.text[:200])
         except Exception as e:
-            logger.error("Layer1 Groq failed: %s — falling back to BM25 only", e)
+            logger.error("Layer1 LLM failed: %s", e)
     else:
-        logger.warning("GROQ_API_KEY not set — skipping Layer 1, BM25 only")
+        logger.warning("GROQ_API_KEY not set — Layer 1 skipped")
 
-    # ── Layer 2: BM25 gap-filler (only if < 4 evidences from Layer 1) ─
-    if len(confirmed) < 4:
-        try:
-            retriever = get_retriever()
-            bm25_evs, bm25_age, bm25_sex = retriever.extract_direct(
-                body.text,
-                top_k=20,
-                bm25_fallback_threshold=12.0,
-                bm25_fallback_max=3,
-            )
-            existing = set(confirmed)
-            added = [e for e in bm25_evs if e not in existing][:3]
-            confirmed = confirmed + added
-            age = age or bm25_age or 25
-            sex = sex or bm25_sex or "M"
-            logger.info("Layer2 BM25 added: %s", added)
-        except Exception as e:
-            logger.warning("Layer2 BM25 failed: %s", e)
+    # ── Layer 2a: Vocab regex (always runs, high precision) ──────────
+    vocab_evs = vocab_extract(body.text)
+    regex_age, regex_sex = extract_age_sex(body.text)
+    logger.info("Layer2 Vocab: %d evidences: %s", len(vocab_evs), vocab_evs)
 
-    # Defaults for missing demographics
-    if age is None:
+    # ── Layer 2b: BM25 (always runs, catches terms LLM normalized) ───
+    bm25_evs: List[str] = []
+    try:
+        retriever = get_retriever()
+        bm25_candidates = retriever.retrieve(body.text, top_k=20)
+        for ev_id, score in bm25_candidates:
+            if score < 6.0:
+                break
+            meta = retriever._meta.get(ev_id, {})
+            if meta.get("data_type") == "B" and not meta.get("is_antecedent", False):
+                bm25_evs.append(ev_id)
+            if len(bm25_evs) >= 8:
+                break
+        logger.info(
+            "Layer2 BM25: %d evidences (top-5 scores: %s)",
+            len(bm25_evs),
+            [(eid, round(s, 1)) for eid, s in bm25_candidates[:5]],
+        )
+    except Exception as e:
+        logger.warning("Layer2 BM25 failed: %s", e)
+
+    # ── Smart Merge: union of all layers, filtered by negation ───────
+    merged: set = set()
+    layers: Dict[str, List[str]] = {"llm": [], "vocab": [], "bm25": []}
+
+    # LLM confirmed (highest trust — understands context & implicit)
+    for ev in llm_confirmed:
+        merged.add(ev)
+        layers["llm"].append(ev)
+
+    # Vocab regex (high precision, negation already handled internally)
+    for ev in vocab_evs:
+        if ev not in llm_negated:
+            if ev not in merged:
+                layers["vocab"].append(ev)
+            merged.add(ev)
+
+    # BM25 (moderate precision, catches normalized terms, filter by negation)
+    for ev in bm25_evs:
+        if ev not in llm_negated and ev not in merged:
+            merged.add(ev)
+            layers["bm25"].append(ev)
+
+    # Promote uncertain symptoms if confirmed by another layer
+    vocab_bm25_set = set(vocab_evs) | set(bm25_evs)
+    for ev in llm_uncertain:
+        if ev in vocab_bm25_set and ev not in merged:
+            merged.add(ev)
+            layers["llm"].append(ev)
+
+    # Demographics: prefer LLM, fallback to regex
+    age = llm_age or regex_age or 25
+    sex = llm_sex or regex_sex or "M"
+    if not isinstance(age, int) or not (0 <= age <= 120):
         age = 25
     if sex not in ("M", "F"):
         sex = "M"
 
-    valid_evidences, invalid = validate_evidences(confirmed)
+    valid_evidences, invalid = validate_evidences(list(merged))
     if invalid:
         logger.warning("extract_symptoms: filtered %d invalid tokens: %s", len(invalid), invalid)
 
     logger.info(
-        "3-layer extract: text=%r -> %d evidences (age=%s sex=%s)",
-        body.text[:60], len(valid_evidences), age, sex,
+        "3-layer merge: %d total (llm=%d, vocab=%d, bm25=%d) -> %d valid (age=%s sex=%s)",
+        len(merged), len(layers["llm"]), len(layers["vocab"]),
+        len(layers["bm25"]), len(valid_evidences), age, sex,
     )
     return {
         "evidences": valid_evidences,
@@ -1358,6 +1406,11 @@ async def extract_symptoms_endpoint(
         "onset_days": onset_days,
         "severity": severity,
         "noSymptoms": len(valid_evidences) == 0,
+        "layers": {
+            "llm": len(layers["llm"]),
+            "vocab": len(layers["vocab"]),
+            "bm25": len(layers["bm25"]),
+        },
     }
 
 

@@ -142,6 +142,51 @@ class QAEngine:
             and self._prereq_ok(ev_id, ev_set)
         ]
 
+    # ─── Diversity helpers ────────────────────────────────────────────────
+
+    @staticmethod
+    def _get_evidence_category(ev_id: str) -> str:
+        """Group evidence IDs into categories for diversity filtering.
+        Prevents asking 3 pain-location questions in a row."""
+        if ev_id.startswith("E_55_"):
+            return "pain_location"
+        if ev_id.startswith("E_54_"):
+            return "pain_character"
+        if ev_id.startswith("E_57_"):
+            return "pain_radiation"
+        return ev_id  # each simple evidence is its own category
+
+    def _select_diverse(
+        self,
+        scored: List[Tuple[str, float]],
+        n: int,
+    ) -> List[Tuple[str, float]]:
+        """Select top-n questions with category diversity.
+        At most 1 question per sub-category (pain_location, pain_character, etc.)
+        to ensure questions span different symptom domains."""
+        selected: List[Tuple[str, float]] = []
+        used_cats: Dict[str, int] = {}
+
+        for ev_id, score in scored:
+            cat = self._get_evidence_category(ev_id)
+            if used_cats.get(cat, 0) >= 1:
+                continue
+            selected.append((ev_id, score))
+            used_cats[cat] = used_cats.get(cat, 0) + 1
+            if len(selected) >= n:
+                break
+
+        # If couldn't fill n with diverse categories, allow repeats
+        if len(selected) < n:
+            selected_ids = {s[0] for s in selected}
+            for ev_id, score in scored:
+                if ev_id not in selected_ids:
+                    selected.append((ev_id, score))
+                    if len(selected) >= n:
+                        break
+
+        return selected
+
     # ─── Round 1: Symptom Exploration (JS divergence) ────────────────────
 
     def _score_exploration(
@@ -270,14 +315,24 @@ class QAEngine:
 
         if round_type == "exploration":
             scored = self._score_exploration(all_candidates, base_vec, base_proba)
-            # Boost broad symptoms to the top by adding a bonus
-            broad_bonus = 0.05
-            scored_boosted = []
+            # Boost broad symptoms (informative early), penalize very narrow
+            n_diseases = len(self.disease_relevant_evidences) or 1
+            scored_adjusted = []
             for ev_id, sc in scored:
-                bonus = broad_bonus if ev_id in self._broad_evidences else 0.0
-                scored_boosted.append((ev_id, sc + bonus))
-            scored_boosted.sort(key=lambda x: x[1], reverse=True)
-            scored = scored_boosted
+                bonus = 0.0
+                if ev_id in self._broad_evidences:
+                    bonus = 0.12  # broad symptoms → high info gain early on
+                else:
+                    # Count how many diseases this evidence is relevant to
+                    relevance_count = sum(
+                        1 for ev_set in self.disease_relevant_evidences.values()
+                        if ev_id in ev_set
+                    )
+                    if relevance_count <= max(1, int(n_diseases * 0.05)):
+                        bonus = -0.04  # very narrow evidence → deprioritize
+                scored_adjusted.append((ev_id, max(sc + bonus, 0.0)))
+            scored_adjusted.sort(key=lambda x: x[1], reverse=True)
+            scored = scored_adjusted
             reason_prefix = "exploration_jsd"
         else:
             # Filter candidates to only those relevant to current top-3
@@ -296,9 +351,10 @@ class QAEngine:
             scored = self._score_discrimination(filtered, base_vec, base_proba)
             reason_prefix = "discrimination_gap"
 
-        # ── Build question list ──────────────────────────────────────────
+        # ── Build question list (with diversity) ─────────────────────────
+        diverse_top = self._select_diverse(scored, n_questions)
         questions: List[QuestionCandidate] = []
-        for ev_id, score in scored[:n_questions]:
+        for ev_id, score in diverse_top:
             meta = self.evidences_meta.get(ev_id, {})
             q_en = meta.get("question_en", ev_id)
             trans = self.question_translations.get(ev_id, {})
