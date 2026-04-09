@@ -386,6 +386,12 @@ def find_discriminative_evidences(
     confidence_threshold: float = 0.60,
 ) -> List[dict]:
     """
+    .. deprecated::
+        Use :class:`qa_engine.QAEngine.get_questions` instead.
+        This function suffers from confirmation bias — it locks onto the
+        top-1 diagnosis from an incomplete symptom vector and only asks
+        questions that reinforce that choice.  Kept as fallback.
+
     Find the top_n most discriminative binary evidences to ask about next.
 
     Filtering pipeline:
@@ -610,3 +616,23 @@ _QUESTION_TRANSLATIONS: dict = {
 }
 
 
+# ─── QAEngine initialisation ────────────────────────────────────────────────
+# Instantiate the new two-round QA engine using all objects already loaded
+# above.  Importing qa_engine here (at module bottom) avoids circular deps.
+try:
+    from qa_engine import QAEngine
+
+    qa_engine = QAEngine(
+        clf=_clf,
+        feature_names=FEATURE_NAMES,
+        label_classes=LABEL_CLASSES,
+        evidences_meta=EVIDENCES_META,
+        disease_relevant_evidences=_DISEASE_RELEVANT_EVIDENCES,
+        question_translations=_QUESTION_TRANSLATIONS,
+        evidence_prerequisites=_EVIDENCE_PREREQUISITES,
+        never_ask=_NEVER_ASK,
+    )
+    logger.info("QAEngine initialised successfully")
+except Exception as e:
+    qa_engine = None
+    logger.error("Failed to initialise QAEngine: %s", e)
