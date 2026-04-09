@@ -29,7 +29,7 @@ from auth import (
     require_patient_or_doctor,
 )
 from crypto_utils import encrypt_field, decrypt_field
-from ml_model import sklearn_predict, validate_evidences, find_discriminative_evidences, qa_engine
+from ml_model import sklearn_predict, validate_evidences, qa_engine
 
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
@@ -1374,38 +1374,24 @@ async def next_questions_endpoint(
     Round 2 (discrimination): gap between top-1 and top-2.
     Falls back to old find_discriminative_evidences if QAEngine unavailable.
     """
-    # ── Primary path: QAEngine (2-round) ─────────────────────────────
-    if qa_engine is not None:
-        result = qa_engine.get_questions(
-            evidences=body.evidences,
-            age=body.age,
-            sex=body.sex,
-            round_num=body.round_num,
-            n_questions=body.n,
-        )
-        questions = [
-            {
-                "evidence_id": q.evidence_id,
-                "question_ru": q.question_ru,
-                "question_kk": q.question_kk,
-                "score": q.score,
-                "reason": q.reason,
-            }
-            for q in result.questions
-        ]
-        top3 = result.top3
-    else:
-        # ── Fallback: old single-round method ────────────────────────
-        logger.warning("QAEngine unavailable, falling back to find_discriminative_evidences")
-        questions = find_discriminative_evidences(
-            body.evidences,
-            age=body.age,
-            sex=body.sex,
-            top_n=body.n,
-        )
-        top3_raw = sklearn_predict(body.evidences, age=body.age, sex=body.sex, top_n=3)
-        top3 = [(name, sc) for name, sc in top3_raw]
-        result = None
+    result = qa_engine.get_questions(
+        evidences=body.evidences,
+        age=body.age,
+        sex=body.sex,
+        round_num=body.round_num,
+        n_questions=body.n,
+    )
+    questions = [
+        {
+            "evidence_id": q.evidence_id,
+            "question_ru": q.question_ru,
+            "question_kk": q.question_kk,
+            "score": q.score,
+            "reason": q.reason,
+        }
+        for q in result.questions
+    ]
+    top3 = result.top3
 
     # Safety layer: check current evidences for critical symptoms
     ev_set = set(body.evidences) if body.evidences else set()
@@ -1436,7 +1422,7 @@ async def next_questions_endpoint(
     top1_score = top3[0][1] if top3 else 0.0
     zone = classify_zone(top1_name, top1_score, evidences=body.evidences)
 
-    response = {
+    return {
         "questions": questions,
         "current_top3": [
             {"disease": name, "label": disease_labels.get(name, name), "score": round(sc, 3)}
@@ -1444,16 +1430,11 @@ async def next_questions_endpoint(
         ],
         "zone": zone,
         "critical_alert": critical_alert,
+        "should_stop": result.should_stop,
+        "stop_reason": result.stop_reason,
+        "confidence": round(result.confidence, 4),
+        "round_type": result.round_type,
     }
-
-    # Add QAEngine metadata when available
-    if result is not None:
-        response["should_stop"] = result.should_stop
-        response["stop_reason"] = result.stop_reason
-        response["confidence"] = round(result.confidence, 4)
-        response["round_type"] = result.round_type
-
-    return response
 
 
 @app.post("/save_explanation")

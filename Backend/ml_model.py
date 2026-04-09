@@ -619,20 +619,18 @@ _QUESTION_TRANSLATIONS: dict = {
 # ─── QAEngine initialisation ────────────────────────────────────────────────
 # Instantiate the new two-round QA engine using all objects already loaded
 # above.  Importing qa_engine here (at module bottom) avoids circular deps.
-try:
-    from qa_engine import QAEngine
+# NO try/except — if this fails, the server must crash loudly, not silently
+# fall back to the broken find_discriminative_evidences.
+from qa_engine import QAEngine
 
-    qa_engine = QAEngine(
-        clf=_clf,
-        feature_names=FEATURE_NAMES,
-        label_classes=LABEL_CLASSES,
-        evidences_meta=EVIDENCES_META,
-        disease_relevant_evidences=_DISEASE_RELEVANT_EVIDENCES,
-        question_translations=_QUESTION_TRANSLATIONS,
-        evidence_prerequisites=_EVIDENCE_PREREQUISITES,
-        never_ask=_NEVER_ASK,
-    )
-    logger.info("QAEngine initialised successfully")
-except Exception as e:
-    qa_engine = None
-    logger.error("Failed to initialise QAEngine: %s", e)
+qa_engine = QAEngine(
+    clf=_clf,
+    feature_names=FEATURE_NAMES,
+    label_classes=LABEL_CLASSES,
+    evidences_meta=EVIDENCES_META,
+    disease_relevant_evidences=_DISEASE_RELEVANT_EVIDENCES,
+    question_translations=_QUESTION_TRANSLATIONS,
+    evidence_prerequisites=_EVIDENCE_PREREQUISITES,
+    never_ask=_NEVER_ASK,
+)
+logger.info("QAEngine initialised successfully")
