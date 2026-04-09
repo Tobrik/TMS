@@ -29,7 +29,7 @@ from auth import (
     require_patient_or_doctor,
 )
 from crypto_utils import encrypt_field, decrypt_field
-from ml_model import sklearn_predict, validate_evidences, find_discriminative_evidences
+from ml_model import sklearn_predict, validate_evidences, find_discriminative_evidences, qa_engine
 
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
@@ -113,6 +113,7 @@ class NextQuestionsRequest(BaseModel):
     age: int = Field(default=25, ge=0, le=120)
     sex: str = Field(default="M", pattern="^[MF]$")
     n: int = Field(default=3, ge=1, le=5)
+    round_num: int = Field(default=1, ge=1, le=3)
 
 class SaveExplanationRequest(BaseModel):
     day_id: int = Field(..., gt=0)
@@ -888,6 +889,220 @@ def day_belongs_to_patient(day_id: int, patient_id: int) -> bool:
 create_tables()
 seed_doctors()
 
+# ─── LLM extraction prompt (Groq LLaMA 3.3 70B) ────────────────────────────
+_LLM_EXTRACTION_PROMPT = """\
+You are a clinical NLP engine for a medical triage system operating in Central Asia (Kazakhstan/CIS).
+Your sole task: extract structured diagnostic evidence from a patient's free-text complaint.
+
+## OUTPUT CONTRACT
+Return ONLY valid JSON. No markdown, no preamble, no explanation, no code fences.
+Schema:
+{
+  "evidences": ["E_91", "E_55_@_V_89", ...],
+  "age": 32,
+  "sex": "M",
+  "negated": ["E_201"],
+  "uncertain": ["E_14"],
+  "implicit": ["E_175"],
+  "onset_days": 3,
+  "severity": "medium",
+  "extraction_notes": "brief internal reasoning, 1-2 sentences max"
+}
+
+- evidences: confirmed positive findings → DDXPlus binary evidence IDs
+- negated: explicitly denied symptoms (DO NOT include in evidences)
+- uncertain: mentioned with doubt ("возможно", "кажется", "might have")
+- implicit: inferred from context but not stated directly (e.g. "лежу 3 дня" → E_88)
+- age: integer or null
+- sex: "M", "F", or null
+- onset_days: how many days since symptoms started (integer or null)
+- severity: "mild" | "medium" | "severe" | null
+- extraction_notes: 1 sentence explaining your main extraction decisions
+
+## EVIDENCE ID REFERENCE
+Map patient symptoms to these DDXPlus binary evidence IDs:
+
+### Systemic / Fever
+E_91 — fever / temperature (температура, қызба)
+E_94 — chills / shivers (озноб, қалтырау)
+E_50 — increased sweating (потеет, терлеу)
+E_175 — fatigue / malaise (слабость, усталость, әлсіздік)
+E_88 — extreme fatigue / bedridden (не может встать, лежит весь день)
+E_89 — non-restful sleep / insomnia (плохой сон, бессонница)
+E_144 — diffuse muscle pain / myalgia (ломота, мышечные боли, бұлшықет ауру)
+E_162 — unintentional weight loss (похудел, теряет вес)
+E_161 — decreased appetite (нет аппетита, жоқ тәбет)
+E_96 — weight gain (набрал вес)
+
+### Pain (requires E_53 = pain present)
+E_53 — pain present (есть боль, any pain)
+E_55_@_V_89 — pain location: forehead/head (голова, бас)
+E_55_@_V_166 — pain location: temple (висок)
+E_55_@_V_124 — pain location: occiput (затылок)
+E_55_@_V_62 — pain location: top of head (макушка)
+E_55_@_V_101 — pain location: upper chest/sternum (грудь, кеуде)
+E_55_@_V_55 — pain location: side of chest (бок груди)
+E_55_@_V_148 — pain location: pharynx/throat (горло, тамақ)
+E_55_@_V_129 — pain location: ear (ухо)
+E_55_@_V_187 — pain location: abdomen/belly (живот, іш)
+E_55_@_V_87 — pain location: right iliac fossa (правый низ живота)
+E_55_@_V_197 — pain location: epigastrium (эпигастрий, под ложечкой)
+E_55_@_V_26 — pain location: neck (шея)
+E_55_@_V_40 — pain location: lower back (поясница, спина)
+E_55_@_V_92 — pain location: knee (колено)
+E_55_@_V_194 — pain location: shoulder (плечо)
+E_55_@_V_127 — pain location: scapula (лопатка)
+E_55_@_V_16 — pain location: groin (пах)
+E_57_@_V_195 — pain radiates to left arm/shoulder (отдаёт в левую руку)
+E_57_@_V_121 — pain radiates to jaw (отдаёт в челюсть)
+E_54_@_V_184 — pain character: pulsating/throbbing (пульсирует)
+E_54_@_V_192 — pain character: sharp/stabbing (острая, резкая)
+E_54_@_V_179 — pain character: stabbing/knife (колющая)
+E_54_@_V_154 — pain character: dull/aching (тупая, ноющая)
+E_54_@_V_182 — pain character: cramping/spasm (схваткообразная)
+E_54_@_V_183 — pain character: pressing/crushing (давящая, сжимающая)
+E_54_@_V_181 — pain character: burning (жжение)
+
+### Respiratory
+E_201 — cough (кашель, жөтел)
+E_77 — colored/abundant sputum (мокрота, қақырық)
+E_181 — nasal congestion / runny nose (насморк, мұрын бітелу)
+E_182 — purulent nasal discharge green/yellow (гнойные выделения)
+E_66 — shortness of breath / dyspnea (одышка, ентігу)
+E_64 — breathless on minimal exertion (задыхается при малейшей нагрузке)
+E_67 — nocturnal dyspnea, wakes up breathless (ночная одышка)
+E_214 — wheezing on exhale (свист на выдохе, хрипы)
+E_112 — stridor / wheezing on inhale (стридор, шум на вдохе)
+E_220 — pain on deep breathing / pleuritic (больно при вдохе)
+E_45 — hemoptysis / coughing blood (кровь при кашле)
+E_203 — severe paroxysmal coughing fits (приступы сильного кашля)
+E_97 — sore throat (боль в горле, тамақ ауру)
+E_212 — hoarse voice / lost voice (осип, охрип, голос пропал)
+E_65 — difficulty swallowing / dysphagia (трудно глотать)
+
+### Cardiovascular
+E_14 — chest pain at rest (боль в груди в покое)
+E_155 — palpitations / racing heart (сердцебиение, тахикардия)
+E_164 — irregular heartbeat / arrhythmia (аритмия, нерегулярный пульс)
+E_82 — dizziness / near-syncope (головокружение, бас айналу)
+E_159 — loss of consciousness / syncope (потеря сознания)
+
+### Gastrointestinal
+E_148 — nausea / vomiting (тошнота, рвота, лоқсу)
+E_211 — repeated vomiting >=2x (многократная рвота)
+E_51 — diarrhea (понос, диарея)
+E_173 — heartburn / acid reflux (изжога)
+E_30 — bloating / abdominal distension (вздутие)
+E_140 — black/tarry stool (чёрный стул, мелена)
+E_179 — blood in stool (кровь в стуле)
+E_210 — vomiting blood (рвота с кровью)
+
+### Neurological
+E_103 — loss of smell (потеря запаха, иіс сезу жоқ)
+E_177 — numbness / tingling (онемение, покалывание)
+E_93 — numbness in feet specifically (онемение стоп)
+E_84 — bilateral limb weakness (слабость в обеих руках/ногах)
+E_156 — facial weakness/paralysis (слабость лица)
+E_52 — double vision / diplopia (двоение в глазах)
+E_172 — drooping eyelid / ptosis (опущение века)
+E_39 — confusion / disorientation (спутанность сознания)
+E_43 — seizures / convulsions (судороги, припадок)
+E_192 — neck muscle spasm (спазм мышц шеи)
+E_193 — facial/body muscle spasms (спазмы мышц лица/тела)
+E_168 — can't control tongue (язык вываливается)
+E_205 — can't open mouth / trismus (не может открыть рот)
+E_111 — fear of dying (страх смерти)
+E_171 — depersonalization / derealization (ощущение нереальности)
+
+### Skin / Eyes / ENT
+E_129 — rash / skin lesion (сыпь, бөртпе)
+E_74 — red eyes / conjunctivitis (красные глаза)
+E_9 — swollen lymph nodes (лимфоузлы увеличены)
+E_127 — increased tearing / watery eyes (слезятся глаза)
+E_154 — pale skin / pallor (бледность)
+E_92 — facial flushing / red cheeks (покраснение лица)
+E_151 — localized swelling / edema (отёк)
+E_178 — unusual bleeding / bruising (необычные синяки, кровотечения)
+E_169 — itchy nose / postnasal drip (зуд в носу, аллергия)
+E_170 — intense eye itching (сильный зуд в глазах)
+
+### Modifiers / Context
+E_220 — pain worse on deep breath (боль при дыхании)
+E_217 — symptoms worse lying, better sitting (хуже лёжа, лучше сидя)
+E_218 — symptoms worse with exertion (хуже при нагрузке)
+E_219 — symptoms worse at night (хуже ночью)
+E_216 — pain worse with movement (хуже при движении)
+E_221 — worse with coughing/straining (хуже при кашле/натуживании)
+E_215 — symptoms worse after eating (хуже после еды)
+E_33 — pain better leaning forward (легче наклонившись вперёд)
+E_13 — symptoms progressively worsening over 2 weeks (ухудшается 2 недели)
+E_41 — contact with sick person (контакт с больным)
+E_116 — had cold in past 2 weeks (простыл недавно)
+E_99 — history of migraines (мигрень в анамнезе)
+
+### Comorbidities / History
+E_105 — history of heart attack / angina (инфаркт/стенокардия в анамнезе)
+E_106 — heart failure (сердечная недостаточность)
+E_123 — asthma history (астма)
+E_124 — uses bronchodilator (использует ингалятор)
+E_69 — diabetes (диабет)
+E_102 — hypertension (высокое давление)
+E_79 — smoker (курит)
+E_23 — sleep apnea (апноэ сна)
+E_86 — family history of allergy/eczema (аллергия у родственников)
+
+## EXTRACTION RULES
+
+### RULE 1 — NEGATION (critical)
+Negated symptoms go to "negated" array only. NEVER put them in "evidences".
+Negation patterns: "не [symptom]", "нет [symptom]", "без [symptom]", "[symptom] нет",
+"[symptom] жоқ", "[symptom] емес", "no [symptom]", "denies [symptom]", "without [symptom]"
+
+### RULE 2 — PAIN DECOMPOSITION
+Any mention of pain REQUIRES at minimum E_53 (pain present).
+Add the most specific location code if location is mentioned.
+Add character code (E_54_@_V_*) only if explicitly described.
+  "болит голова" → [E_53, E_55_@_V_89]
+  "острая боль в груди" → [E_53, E_55_@_V_101, E_14, E_54_@_V_192]
+
+### RULE 3 — IMPLICIT SYMPTOMS (add to "implicit" array AND "evidences")
+Infer clinically obvious signs from context:
+  "не встаю с кровати 3 дня" → add E_88, E_175
+  "ничего не ем второй день" → add E_161
+
+### RULE 4 — TEMPORAL EXTRACTION
+  "3 дня" / "3 күн" / "3 days" → onset_days: 3
+  "неделю" / "апта" / "a week" → onset_days: 7
+  "давно" / "уже долго" → onset_days: null
+
+### RULE 5 — SEVERITY ESTIMATION
+mild: can function normally. medium: interferes with daily activity.
+severe: can't function, emergency markers (E_14 at rest, E_112, E_159, E_210, E_140 → always "severe").
+
+### RULE 6 — VOMITING DISAMBIGUATION
+E_148 = nausea OR single vomiting. E_211 = explicitly REPEATED vomiting only.
+
+### RULE 7 — DO NOT INFER CARDIAC WITHOUT EXPLICIT EVIDENCE
+NEVER add E_14, E_57_@_V_195, E_57_@_V_121 based on headache or fever alone.
+
+### RULE 8 — DEMOGRAPHIC EXTRACTION
+Age: extract from numeric mentions. Sex: "мужчина/ер адам/man" → "M", "женщина/әйел/woman" → "F".
+
+### RULE 9 — KAZAKH LANGUAGE
+Detect by: ә, ғ, қ, ң, ө, ұ, ү, һ, і. Apply same extraction logic.
+
+### RULE 10 — UNCERTAINTY / HEDGING
+"кажется", "возможно", "наверное", "может быть", "мүмкін" → put in "uncertain", NOT in "evidences".
+
+## ABSOLUTE PROHIBITIONS
+- Never add E_14 without explicit mention of chest pain
+- Never add E_57_@_V_195 based on chest pain alone
+- Never add E_112 based on wheezing alone
+- Never fabricate symptoms not present in text
+- Never add cardiac markers from anxiety descriptions unless explicitly stated
+- Never add E_211 from single vomiting mention
+"""
+
 app = FastAPI(
     title="TMS API",
     description="Therapist Machine Support — AI-powered pediatric symptom analysis and triage system",
@@ -1050,25 +1265,77 @@ async def extract_symptoms_endpoint(
     user: dict = Depends(require_patient),
 ):
     """
-    Pure BM25 extraction — no LLaMA needed.
-
-    Flow: Patient text → BM25 retrieval → binary E_XX codes → RF classifier.
-    LLaMA is used ONLY for explanation on the frontend (generateExplanation.ts).
-
-    BM25 directly identifies which of 223 DDXPlus evidences are present in the
-    patient text using multilingual (RU/EN/KK) indexing + Russian synonym expansion.
-    Only binary evidences are extracted here; categorical evidences (pain location,
-    rash properties) require separate value selection and are handled by clarifying
-    questions (/next_questions endpoint).
+    3-layer symptom extraction pipeline:
+      Layer 1: Groq LLaMA 3.3 70B — NLP extraction with negation, uncertainty, implicit symptoms.
+      Layer 2: BM25 gap-filler — only if Layer 1 returns < 4 evidences.
+      Layer 3: QAEngine handles follow-up questions via /next_questions.
     """
+    import httpx as _httpx
     from retrieval import get_retriever
 
-    try:
-        retriever = get_retriever()
-        evidences, age, sex = retriever.extract_direct(body.text, top_k=20)
-    except Exception as e:
-        logger.error("BM25 extraction failed: %s", e)
-        raise HTTPException(status_code=500, detail="Extraction failed")
+    confirmed: List[str] = []
+    age: int = 25
+    sex: str = "M"
+    onset_days = None
+    severity = None
+
+    # ── Layer 1: Groq LLaMA 3.3 70B NLP extraction ──────────────────
+    groq_key = os.environ.get("GROQ_API_KEY", "")
+    if groq_key:
+        try:
+            async with _httpx.AsyncClient(timeout=30) as client:
+                resp = await client.post(
+                    "https://api.groq.com/openai/v1/chat/completions",
+                    headers={"Authorization": f"Bearer {groq_key}", "Content-Type": "application/json"},
+                    json={
+                        "model": "llama-3.3-70b-versatile",
+                        "messages": [
+                            {"role": "system", "content": _LLM_EXTRACTION_PROMPT},
+                            {"role": "user", "content": f'Patient complaint (language: auto-detect Russian/Kazakh/English):\n\n"{body.text}"\n\nExtract all diagnostic evidence. Return JSON only.'},
+                        ],
+                        "temperature": 0.0,
+                        "max_tokens": 800,
+                    },
+                )
+            if resp.status_code == 200:
+                raw = resp.json()["choices"][0]["message"]["content"].strip()
+                if raw.startswith("```"):
+                    raw = raw.split("```")[1]
+                    if raw.startswith("json"):
+                        raw = raw[4:]
+                    raw = raw.strip()
+                layer1 = json.loads(raw)
+                confirmed = layer1.get("evidences", [])
+                age = layer1.get("age") or 25
+                sex = layer1.get("sex") or "M"
+                onset_days = layer1.get("onset_days")
+                severity = layer1.get("severity")
+                logger.info("Layer1 Groq: %d evidences, age=%s sex=%s", len(confirmed), age, sex)
+            else:
+                logger.error("Layer1 Groq HTTP %d: %s", resp.status_code, resp.text[:200])
+        except Exception as e:
+            logger.error("Layer1 Groq failed: %s — falling back to BM25 only", e)
+    else:
+        logger.warning("GROQ_API_KEY not set — skipping Layer 1, BM25 only")
+
+    # ── Layer 2: BM25 gap-filler (only if < 4 evidences from Layer 1) ─
+    if len(confirmed) < 4:
+        try:
+            retriever = get_retriever()
+            bm25_evs, bm25_age, bm25_sex = retriever.extract_direct(
+                body.text,
+                top_k=20,
+                bm25_fallback_threshold=12.0,
+                bm25_fallback_max=3,
+            )
+            existing = set(confirmed)
+            added = [e for e in bm25_evs if e not in existing][:3]
+            confirmed = confirmed + added
+            age = age or bm25_age or 25
+            sex = sex or bm25_sex or "M"
+            logger.info("Layer2 BM25 added: %s", added)
+        except Exception as e:
+            logger.warning("Layer2 BM25 failed: %s", e)
 
     # Defaults for missing demographics
     if age is None:
@@ -1076,15 +1343,22 @@ async def extract_symptoms_endpoint(
     if sex not in ("M", "F"):
         sex = "M"
 
-    valid_evidences, invalid = validate_evidences(evidences)
+    valid_evidences, invalid = validate_evidences(confirmed)
     if invalid:
         logger.warning("extract_symptoms: filtered %d invalid tokens: %s", len(invalid), invalid)
 
     logger.info(
-        "bm25 extract: text=%r -> %d evidences (age=%s sex=%s)",
+        "3-layer extract: text=%r -> %d evidences (age=%s sex=%s)",
         body.text[:60], len(valid_evidences), age, sex,
     )
-    return {"evidences": valid_evidences, "age": age, "sex": sex, "noSymptoms": len(valid_evidences) == 0}
+    return {
+        "evidences": valid_evidences,
+        "age": age,
+        "sex": sex,
+        "onset_days": onset_days,
+        "severity": severity,
+        "noSymptoms": len(valid_evidences) == 0,
+    }
 
 
 @app.post("/next_questions")
@@ -1095,24 +1369,49 @@ async def next_questions_endpoint(
     _user: dict = Depends(require_patient),
 ):
     """
-    Returns the N most discriminative yes/no questions to ask next,
-    based on current evidences. Questions are chosen by information gain
-    between the current top-3 candidate diseases.
+    Two-round follow-up question selection via QAEngine.
+    Round 1 (exploration): JSD across full disease space.
+    Round 2 (discrimination): gap between top-1 and top-2.
+    Falls back to old find_discriminative_evidences if QAEngine unavailable.
     """
-    questions = find_discriminative_evidences(
-        body.evidences,
-        age=body.age,
-        sex=body.sex,
-        top_n=body.n,
-    )
-    top3 = sklearn_predict(body.evidences, age=body.age, sex=body.sex, top_n=3)
+    # ── Primary path: QAEngine (2-round) ─────────────────────────────
+    if qa_engine is not None:
+        result = qa_engine.get_questions(
+            evidences=body.evidences,
+            age=body.age,
+            sex=body.sex,
+            round_num=body.round_num,
+            n_questions=body.n,
+        )
+        questions = [
+            {
+                "evidence_id": q.evidence_id,
+                "question_ru": q.question_ru,
+                "question_kk": q.question_kk,
+                "score": q.score,
+                "reason": q.reason,
+            }
+            for q in result.questions
+        ]
+        top3 = result.top3
+    else:
+        # ── Fallback: old single-round method ────────────────────────
+        logger.warning("QAEngine unavailable, falling back to find_discriminative_evidences")
+        questions = find_discriminative_evidences(
+            body.evidences,
+            age=body.age,
+            sex=body.sex,
+            top_n=body.n,
+        )
+        top3_raw = sklearn_predict(body.evidences, age=body.age, sex=body.sex, top_n=3)
+        top3 = [(name, sc) for name, sc in top3_raw]
+        result = None
 
     # Safety layer: check current evidences for critical symptoms
     ev_set = set(body.evidences) if body.evidences else set()
     critical_alert = None
 
     if "E_112" in ev_set:
-        # Stridor = airway obstruction — life-threatening
         critical_alert = {
             "level": "red",
             "message": "⚠️ СТРИДОР (шумное дыхание на вдохе) — признак обструкции дыхательных путей. "
@@ -1137,7 +1436,7 @@ async def next_questions_endpoint(
     top1_score = top3[0][1] if top3 else 0.0
     zone = classify_zone(top1_name, top1_score, evidences=body.evidences)
 
-    return {
+    response = {
         "questions": questions,
         "current_top3": [
             {"disease": name, "label": disease_labels.get(name, name), "score": round(sc, 3)}
@@ -1146,6 +1445,15 @@ async def next_questions_endpoint(
         "zone": zone,
         "critical_alert": critical_alert,
     }
+
+    # Add QAEngine metadata when available
+    if result is not None:
+        response["should_stop"] = result.should_stop
+        response["stop_reason"] = result.stop_reason
+        response["confidence"] = round(result.confidence, 4)
+        response["round_type"] = result.round_type
+
+    return response
 
 
 @app.post("/save_explanation")
