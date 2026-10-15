@@ -1,14 +1,14 @@
 """
 ML inference module for TMS backend.
-Loads the trained RandomForest model from 'training sklearn/' and exposes
-a single predict function used by the /analys endpoint.
+Loads the trained RandomForest model from 'training sklearn/' and exposes the
+posterior over diseases used by the question engine and the /analys endpoint.
 """
 
 import json
 import logging
 import numpy as np
 from pathlib import Path
-from typing import List, Tuple
+from typing import Dict, Iterable, List, Optional, Tuple
 
 logger = logging.getLogger("tms")
 
@@ -20,11 +20,16 @@ _MODEL_PATH    = _TRAINING_DIR / "model.pkl"
 _FEATURES_PATH = _TRAINING_DIR / "feature_names.json"
 _LABELS_PATH   = _TRAINING_DIR / "label_classes.json"
 _EVIDENCES_PATH = _TRAINING_DIR / "release_evidences.json"
+_STATS_PATH    = _TRAINING_DIR / "evidence_stats.json"
 
 # ─── Load model and metadata at import time ───
 try:
     import joblib
     _clf = joblib.load(_MODEL_PATH)
+    # Saved with n_jobs=-1 and verbose=1: every predict_proba spun up a thread
+    # pool (~13 ms instead of ~1 ms) and logged two lines. Run inline, quietly.
+    _clf.n_jobs = 1
+    _clf.verbose = 0
     logger.info("sklearn model loaded from %s", _MODEL_PATH)
 except Exception as e:
     _clf = None
@@ -59,7 +64,51 @@ except Exception as e:
     EVIDENCES_META = {}
     logger.error("Failed to load release_evidences.json: %s", e)
 
-def build_feature_vector(evidences: List[str], age: int = 25, sex: str = "M") -> np.ndarray:
+# ─── Evidence statistics (built by 'training sklearn/build_evidence_stats.py') ───
+# P(evidence | disease), P(disease) and demographics per disease, counted from
+# the DDXPlus validation split.
+try:
+    with open(_STATS_PATH, encoding="utf-8") as f:
+        EVIDENCE_STATS: dict = json.load(f)
+    logger.info("Evidence stats loaded: %d patients", EVIDENCE_STATS.get("n_patients", 0))
+except Exception as e:
+    EVIDENCE_STATS = {}
+    logger.error("Failed to load evidence_stats.json: %s", e)
+
+# Smoothing: likelihoods are clipped to [floor, 1 - floor]. 0.03 measured best in
+# eval/simulate.py, including with a wrongly extracted symptom (--noise 0.3).
+_LIKELIHOOD_FLOOR = 0.03
+
+
+def _build_likelihood_matrix(floor: float = _LIKELIHOOD_FLOOR) -> np.ndarray:
+    """(n_classes, N_FEATURES) matrix of P(feature token | disease), clipped to
+    [floor, 1 - floor]. The floor is the smoothing that keeps one wrong symptom
+    from zeroing out the right disease."""
+    lik = np.full((len(LABEL_CLASSES), N_FEATURES), floor, dtype=np.float64)
+    table = EVIDENCE_STATS.get("p_evidence_given_disease", {})
+    for ci, disease in enumerate(LABEL_CLASSES):
+        for token, p in table.get(disease, {}).items():
+            if token in _feat_idx:
+                lik[ci, _feat_idx[token]] = min(max(p, floor), 1 - floor)
+    return lik
+
+
+LIKELIHOODS = _build_likelihood_matrix()
+_CLASS_PRIORS = np.array(
+    [EVIDENCE_STATS.get("priors", {}).get(d, 1.0 / max(len(LABEL_CLASSES), 1)) for d in LABEL_CLASSES]
+)
+_AGE_BIN_EDGES: List[int] = EVIDENCE_STATS.get("age_bin_edges", [])
+_AGE_LIKELIHOODS = np.array(
+    [EVIDENCE_STATS.get("p_age_bin_given_disease", {}).get(d, [1.0] * (len(_AGE_BIN_EDGES) + 1))
+     for d in LABEL_CLASSES]
+)
+_SEX_LIKELIHOODS = {
+    s: np.array([EVIDENCE_STATS.get("p_sex_given_disease", {}).get(d, {}).get(s, 0.5) for d in LABEL_CLASSES])
+    for s in ("M", "F")
+}
+
+
+def build_feature_vector(evidences: Iterable[str], age: int = 25, sex: str = "M") -> np.ndarray:
     """
     Build a 1D numpy feature vector from a list of evidence token strings.
 
@@ -79,23 +128,9 @@ def build_feature_vector(evidences: List[str], age: int = 25, sex: str = "M") ->
     if sex.upper() == "M" and "__SEX_M__" in _feat_idx:
         vec[_feat_idx["__SEX_M__"]] = 1.0
 
-    matched = []
-    dropped = []
     for ev in evidences:
         if ev in _feat_idx:
             vec[_feat_idx[ev]] = 1.0
-            matched.append(ev)
-        else:
-            dropped.append(ev)
-
-    active_count = int(np.sum(vec > 0))
-    logger.info(
-        "build_feature_vector: age=%s sex=%s | %d evidences in, %d matched, %d dropped, %d features active",
-        age, sex, len(evidences), len(matched), len(dropped), active_count,
-    )
-    if dropped:
-        logger.warning("DROPPED evidences (not in feature_names): %s", dropped)
-    logger.info("MATCHED evidences -> feature indices: %s", {ev: _feat_idx[ev] for ev in matched})
 
     return vec
 
@@ -158,6 +193,15 @@ _EXCLUSION_RULES: list = [
     },
 ]
 
+
+def _mentions(ev_set: set, code: str) -> bool:
+    """True if `code` is present, or (for categorical codes like E_57) any value
+    of it other than V_123 ("nowhere") is."""
+    if code in ev_set:
+        return True
+    prefix = code + "_@_"
+    return any(e.startswith(prefix) and not e.endswith("_@_V_123") for e in ev_set)
+
 # ─── Bayesian age/sex priors ─────────────────────────────────────────────────
 # Soft penalties for diseases epidemiologically near-impossible in a demographic.
 # age_range is inclusive [lo, hi]. sex: "M"/"F"/None (None = any).
@@ -194,17 +238,153 @@ _AGE_SEX_PRIORS: list = [
         # COPD: essentially absent under 35 without alpha-1 antitrypsin deficiency
         "age_range": (0, 35),
         "sex": None,
-        "diseases": ["COPD"],
+        "diseases": ["Acute COPD exacerbation / infection"],
         "penalty": 0.10,
     },
 ]
 
 
-def sklearn_predict(
+# ─── Posterior over diseases ─────────────────────────────────────────────────
+# Base posterior:
+#   "nb": naive Bayes over evidence_stats.json. Handles the three states a chat
+#         produces — reported, denied, never mentioned (skipped) — and uses age/sex
+#         only when the patient stated them.
+#   "rf": the RandomForest. Trained on complete DDXPlus records (~20 evidences,
+#         0 = "absent"), so a chat's handful of evidences reads to it as "denies
+#         everything else"; it cannot use denied answers at all.
+# eval/simulate.py on 3,000 held-out test patients (chief complaint + 2 symptoms,
+# then follow-up questions): nb 95.8% top-1 vs rf 65.0%. With the full patient
+# record both reach ~99%. triage.RED_MASS_THRESHOLD is tuned for nb; re-tune it
+# before switching (with rf it sends ~2/3 of green-tier patients to red).
+POSTERIOR = "nb"
+
+_CLASS_IDX = {d: i for i, d in enumerate(LABEL_CLASSES)}
+
+
+def _age_bin(age: int) -> int:
+    return sum(age >= edge for edge in _AGE_BIN_EDGES)
+
+
+def _rf_class_proba(evidences: Iterable[str], age: Optional[int], sex: Optional[str]) -> np.ndarray:
+    vec = build_feature_vector(evidences, 25 if age is None else age, sex or "M")
+    return _clf.predict_proba(vec.reshape(1, -1))[0]
+
+
+def _nb_class_proba(
+    present: Iterable[str],
+    absent: Iterable[str],
+    age: Optional[int] = None,
+    sex: Optional[str] = None,
+) -> np.ndarray:
+    log_p = np.log(_CLASS_PRIORS)
+    idx = [_feat_idx[e] for e in present if e in _feat_idx]
+    if idx:
+        log_p = log_p + np.log(LIKELIHOODS[:, idx]).sum(axis=1)
+    idx = [_feat_idx[e] for e in absent if e in _feat_idx]
+    if idx:
+        log_p = log_p + np.log(1.0 - LIKELIHOODS[:, idx]).sum(axis=1)
+    if age is not None and len(_AGE_BIN_EDGES):
+        log_p = log_p + np.log(_AGE_LIKELIHOODS[:, _age_bin(age)])
+    if sex in _SEX_LIKELIHOODS:
+        log_p = log_p + np.log(_SEX_LIKELIHOODS[sex])
+    p = np.exp(log_p - log_p.max())
+    return p / p.sum()
+
+
+def _apply_clinical_adjustments(
+    proba: np.ndarray, ev_set: set, age: Optional[int], sex: Optional[str], hand_priors: bool = True,
+) -> np.ndarray:
+    """Geographic filter, correction rules and age/sex priors, applied per class
+    (before pooling, so both members of a clinical group are adjusted alike)."""
+    p = proba.astype(np.float64).copy()
+
+    def scale(disease: str, factor: float) -> None:
+        if disease in _CLASS_IDX:
+            p[_CLASS_IDX[disease]] *= factor
+
+    # Geographic filter — diseases absent in CIS/Central Asia
+    for disease in _GEO_EXCLUDED:
+        scale(disease, 0.0)
+
+    # Rule 1: Pleuritic pain (E_220) is AGAINST MI / ACS.
+    if "E_220" in ev_set:
+        for acs_name in ("Possible NSTEMI / STEMI", "Unstable angina"):
+            scale(acs_name, 0.4)  # 60% penalty
+
+    # Rule 2: GERD context (E_173 present) — penalize PE and pulmonary edema.
+    if "E_173" in ev_set and "E_14" not in ev_set:
+        for noise_name in ("Pulmonary embolism", "Acute pulmonary edema",
+                           "Spontaneous pneumothorax"):
+            scale(noise_name, 0.3)  # 70% penalty
+
+    # Rule-based exclusion dictionary: ALL `require` present, NONE of `absent`.
+    for rule in _EXCLUSION_RULES:
+        if rule["require"] <= ev_set and not any(_mentions(ev_set, a) for a in rule["absent"]):
+            for disease in rule["diseases"]:
+                scale(disease, rule["penalty"])
+
+    # Age/sex priors: soft penalties, not hard blocks. Only for a stated age —
+    # v1 defaulted unknown ages to 25, penalising ACS for anyone who didn't say.
+    # Skipped for naive Bayes, which already has P(age|d), P(sex|d) from data.
+    if hand_priors and age is not None:
+        for prior in _AGE_SEX_PRIORS:
+            age_lo, age_hi = prior["age_range"]
+            sex_match = prior.get("sex")  # None = any sex
+            if age_lo <= age <= age_hi and (sex_match is None or sex == sex_match):
+                for disease in prior["diseases"]:
+                    scale(disease, prior["penalty"])
+
+    total = p.sum()
+    return p / total if total > 0 else p
+
+
+def class_posterior(
+    evidences: Iterable[str],
+    absent: Iterable[str] = (),
+    age: Optional[int] = None,
+    sex: Optional[str] = None,
+    posterior: Optional[str] = None,
+) -> np.ndarray:
+    """P(disease | answers) per LABEL_CLASSES entry, after clinical adjustments.
+    age/sex = None means the patient didn't say."""
+    posterior = posterior or POSTERIOR
+    present = list(dict.fromkeys(evidences))
+    absent = [e for e in dict.fromkeys(absent) if e not in set(present)]
+
+    if posterior == "nb":
+        proba = _nb_class_proba(present, absent, age, sex)
+    else:
+        proba = _rf_class_proba(present, age, sex)
+    return _apply_clinical_adjustments(proba, set(present), age, sex, hand_priors=posterior != "nb")
+
+
+def pool_classes(proba: np.ndarray) -> Dict[str, float]:
+    """Sum class probabilities into clinical groups; sorted, highest first."""
+    pooled: Dict[str, float] = {}
+    for i, disease in enumerate(LABEL_CLASSES):
+        canonical = _GROUP_MAP.get(disease, disease)
+        pooled[canonical] = pooled.get(canonical, 0.0) + float(proba[i])
+    pooled = {d: p for d, p in pooled.items() if d not in _GEO_EXCLUDED}
+    return dict(sorted(pooled.items(), key=lambda x: x[1], reverse=True))
+
+
+def predict_distribution(
+    evidences: Iterable[str],
+    age: Optional[int] = None,
+    sex: Optional[str] = None,
+    absent: Iterable[str] = (),
+    **kwargs,
+) -> Dict[str, float]:
+    """Full differential: canonical disease → probability, highest first."""
+    return pool_classes(class_posterior(evidences, absent, age, sex, **kwargs))
+
+
+def predict_top(
     evidences: List[str],
-    age: int = 25,
-    sex: str = "M",
+    age: Optional[int] = None,
+    sex: Optional[str] = None,
     top_n: int = 3,
+    absent: Iterable[str] = (),
 ) -> List[Tuple[str, float]]:
     """
     Predict top-N diagnoses from evidence list.
@@ -213,78 +393,51 @@ def sklearn_predict(
 
     Returns:
         List of (disease_name, probability) tuples, sorted descending.
-        Falls back to [("Unknown", 0.0)] if model not loaded.
+        Falls back to [("Unknown", 0.0)] if the model data is not loaded.
     """
-    if _clf is None or N_FEATURES == 0:
-        logger.error("sklearn model not available for prediction")
+    if N_FEATURES == 0 or (POSTERIOR == "rf" and _clf is None):
+        logger.error("model not available for prediction")
         return [("Unknown", 0.0)]
 
-    logger.info("sklearn_predict called: evidences=%s age=%s sex=%s", evidences, age, sex)
-
-    vec = build_feature_vector(evidences, age, sex)
-    proba = _clf.predict_proba(vec.reshape(1, -1))[0]
-
-    # Log raw RF output (top-5 before any corrections)
-    raw_top5 = sorted(
-        [(LABEL_CLASSES[i], float(proba[i])) for i in range(len(proba))],
-        key=lambda x: x[1], reverse=True,
-    )[:5]
-    logger.info("RF raw top-5: %s", [(d, f"{p:.4f}") for d, p in raw_top5])
-
-    # Pool probabilities within clinical groups
-    pooled: dict = {}
-    for i, disease in enumerate(LABEL_CLASSES):
-        canonical = _GROUP_MAP.get(disease, disease)
-        pooled[canonical] = pooled.get(canonical, 0.0) + float(proba[i])
-
-    # Apply geographic filter — skip diseases absent in CIS/Central Asia
-    filtered = {d: p for d, p in pooled.items() if d not in _GEO_EXCLUDED}
-
-    # ─── Clinical correction rules ────────────────────────────────────────
-    ev_set = set(evidences)
-
-    # Rule 1: Pleuritic pain (E_220) is AGAINST MI / ACS.
-    if "E_220" in ev_set:
-        for acs_name in ("Possible NSTEMI / STEMI", "Unstable angina"):
-            if acs_name in filtered:
-                filtered[acs_name] *= 0.4  # 60% penalty
-
-    # Rule 2: GERD context (E_173 present) — penalize PE and pulmonary edema.
-    if "E_173" in ev_set and "E_14" not in ev_set:
-        for noise_name in ("Pulmonary embolism", "Acute pulmonary edema",
-                           "Spontaneous pneumothorax"):
-            if noise_name in filtered:
-                filtered[noise_name] *= 0.3  # 70% penalty
-
-    # ─── Rule-based exclusion dictionary ──────────────────────────────────
-    # Each rule: if ALL `require` evidences are present AND NONE of `absent`
-    # evidences are present → penalize listed diseases by `penalty` factor.
-    for rule in _EXCLUSION_RULES:
-        if rule["require"] <= ev_set and not (rule["absent"] & ev_set):
-            for disease in rule["diseases"]:
-                if disease in filtered:
-                    filtered[disease] *= rule["penalty"]
-
-    # ─── Bayesian age/sex priors ──────────────────────────────────────────
-    # Penalize diseases that are epidemiologically near-impossible for the
-    # patient's demographic. These are soft priors (penalties, not hard blocks).
-    for prior in _AGE_SEX_PRIORS:
-        age_lo, age_hi = prior["age_range"]
-        sex_match = prior.get("sex")  # None = any sex
-        if age_lo <= age <= age_hi and (sex_match is None or sex == sex_match):
-            for disease in prior["diseases"]:
-                if disease in filtered:
-                    filtered[disease] *= prior["penalty"]
-
-    # Renormalize after adjustments
-    total = sum(filtered.values())
-    if total > 0:
-        filtered = {d: p / total for d, p in filtered.items()}
-
-    sorted_results = sorted(filtered.items(), key=lambda x: x[1], reverse=True)
-    top = sorted_results[:top_n]
-    logger.info("sklearn_predict FINAL top-%d: %s", top_n, [(d, f"{p:.4f}") for d, p in top])
+    absent = list(absent)
+    top = list(predict_distribution(evidences, age, sex, absent).items())[:top_n]
+    logger.info("predict_top: %d present, %d absent -> top-%d %s",
+                len(evidences), len(absent), top_n, [(d, f"{p:.4f}") for d, p in top])
     return top
+
+
+def explain_prediction(
+    evidences: List[str],
+    age: Optional[int] = None,
+    sex: Optional[str] = None,
+    absent: Iterable[str] = (),
+    diseases: Optional[List[str]] = None,
+    top_k: int = 5,
+) -> Dict[str, List[Tuple[str, float]]]:
+    """
+    Leave-one-out attributions: for each disease, how much its probability drops
+    when one reported evidence is removed (positive = that evidence supports it).
+    These are measured facts about the model, given to the LLM to verbalise
+    instead of letting it invent symptom weights.
+    """
+    absent = list(absent)
+    full = predict_distribution(evidences, age, sex, absent)
+    diseases = diseases or list(full)[:3]
+    result: Dict[str, List[Tuple[str, float]]] = {d: [] for d in diseases}
+
+    for ev in dict.fromkeys(evidences):
+        reduced = predict_distribution([e for e in evidences if e != ev], age, sex, absent)
+        for d in diseases:
+            result[d].append((ev, full.get(d, 0.0) - reduced.get(d, 0.0)))
+    for ev in dict.fromkeys(absent):
+        reduced = predict_distribution(evidences, age, sex, [e for e in absent if e != ev])
+        for d in diseases:
+            result[d].append((f"NOT {ev}", full.get(d, 0.0) - reduced.get(d, 0.0)))
+
+    return {
+        d: sorted(pairs, key=lambda x: abs(x[1]), reverse=True)[:top_k]
+        for d, pairs in result.items()
+    }
 
 
 def validate_evidences(evidences: List[str]) -> Tuple[List[str], List[str]]:
@@ -375,128 +528,6 @@ _EVIDENCE_PREREQUISITES: dict = {
 _NEVER_ASK = {
     "E_211",  # repeated vomiting — only from patient text, not as question
 }
-
-
-def find_discriminative_evidences(
-    evidences: List[str],
-    age: int = 25,
-    sex: str = "M",
-    top_n: int = 3,
-    min_shift: float = 0.01,
-    confidence_threshold: float = 0.60,
-) -> List[dict]:
-    """
-    .. deprecated::
-        Use :class:`qa_engine.QAEngine.get_questions` instead.
-        This function suffers from confirmation bias — it locks onto the
-        top-1 diagnosis from an incomplete symptom vector and only asks
-        questions that reinforce that choice.  Kept as fallback.
-
-    Find the top_n most discriminative binary evidences to ask about next.
-
-    Filtering pipeline:
-      1. Only binary evidences not yet known
-      2. Prerequisite check: skip child evidences (E_55, E_57, E_54) if parent
-         (E_53) is not yet confirmed
-      3. Relevance filter: only consider evidences relevant to current top-3
-         diagnoses (from precomputed disease→evidence map)
-      4. Score by probability shift on top-1 disease
-
-    If the top-1 diagnosis already has confidence >= confidence_threshold,
-    no follow-up questions needed.
-
-    Returns list of {evidence_id, question_en, question_ru, question_kk, score}.
-    """
-    if _clf is None or N_FEATURES == 0:
-        return []
-
-    base_vec = build_feature_vector(evidences, age, sex)
-    base_proba = _clf.predict_proba(base_vec.reshape(1, -1))[0]
-    top3_idx = np.argsort(base_proba)[::-1][:3]
-
-    # If top-1 confidence is already high, no clarification needed
-    top1_conf = float(base_proba[top3_idx[0]])
-    if top1_conf >= confidence_threshold:
-        logger.info(
-            "skip follow-up questions: top-1 confidence %.2f >= %.2f",
-            top1_conf, confidence_threshold,
-        )
-        return []
-
-    ev_set = set(evidences)
-
-    # Step 1: Only consider binary evidences not yet known
-    candidates = [
-        ev_id for ev_id, meta in EVIDENCES_META.items()
-        if meta.get("data_type") == "B"
-        and ev_id not in ev_set
-        and ev_id in _feat_idx
-        and not meta.get("is_antecedent", False)
-        and ev_id not in _NEVER_ASK
-    ]
-
-    # Step 2: Prerequisite check — skip children whose parent is absent
-    def _prereq_ok(ev_id: str) -> bool:
-        for prefix, parent in _EVIDENCE_PREREQUISITES.items():
-            if ev_id == parent:
-                return True  # parent itself is always ok to ask
-            if ev_id.startswith(prefix) and parent not in ev_set:
-                return False
-        return True
-
-    candidates = [c for c in candidates if _prereq_ok(c)]
-
-    # Step 3: Relevance filter — only evidences relevant to top-3 diagnoses
-    if _DISEASE_RELEVANT_EVIDENCES:
-        top3_names = [LABEL_CLASSES[i] for i in top3_idx]
-        relevant = set()
-        for d_name in top3_names:
-            relevant |= _DISEASE_RELEVANT_EVIDENCES.get(d_name, set())
-            # Also check canonical group name
-            canonical = _GROUP_MAP.get(d_name, d_name)
-            if canonical != d_name:
-                relevant |= _DISEASE_RELEVANT_EVIDENCES.get(canonical, set())
-        candidates = [c for c in candidates if c in relevant]
-        logger.info(
-            "relevance filter: %d candidates for top-3 %s",
-            len(candidates),
-            [f"{LABEL_CLASSES[i]}({base_proba[i]:.2f})" for i in top3_idx],
-        )
-
-    if not candidates:
-        return []
-
-    # Batch predict: one row per candidate with that feature set to 1
-    batch = np.tile(base_vec, (len(candidates), 1))
-    for i, ev_id in enumerate(candidates):
-        batch[i, _feat_idx[ev_id]] = 1.0
-
-    probas = _clf.predict_proba(batch)  # (n_candidates, n_classes)
-
-    # Score by how much each candidate shifts the top-1 diagnosis probability
-    top1_idx = top3_idx[0]
-    base_top1_p = base_proba[top1_idx]
-    scores = []
-    for i, ev_id in enumerate(candidates):
-        shift = abs(float(probas[i][top1_idx]) - base_top1_p)
-        if shift >= min_shift:
-            scores.append((ev_id, shift))
-
-    scores.sort(key=lambda x: x[1], reverse=True)
-
-    result = []
-    for ev_id, score in scores[:top_n]:
-        meta = EVIDENCES_META.get(ev_id, {})
-        q_en = meta.get("question_en", ev_id)
-        result.append({
-            "evidence_id": ev_id,
-            "question_en": q_en,
-            "question_ru": _QUESTION_TRANSLATIONS.get(ev_id, {}).get("ru", q_en),
-            "question_kk": _QUESTION_TRANSLATIONS.get(ev_id, {}).get("kk", q_en),
-            "score": score,
-        })
-
-    return result
 
 
 # ─── Manual translations for the most common diagnostic questions ───
@@ -617,20 +648,31 @@ _QUESTION_TRANSLATIONS: dict = {
 
 
 # ─── QAEngine initialisation ────────────────────────────────────────────────
-# Instantiate the new two-round QA engine using all objects already loaded
-# above.  Importing qa_engine here (at module bottom) avoids circular deps.
-# NO try/except — if this fails, the server must crash loudly, not silently
-# fall back to the broken find_discriminative_evidences.
+# Instantiate the two-round QA engine using all objects already loaded above.
+# Importing qa_engine here (at module bottom) avoids circular deps.
+# NO try/except — if this fails, the server must crash loudly.
 from qa_engine import QAEngine
+from triage import tier_of
 
-qa_engine = QAEngine(
-    clf=_clf,
-    feature_names=FEATURE_NAMES,
-    label_classes=LABEL_CLASSES,
-    evidences_meta=EVIDENCES_META,
-    disease_relevant_evidences=_DISEASE_RELEVANT_EVIDENCES,
-    question_translations=_QUESTION_TRANSLATIONS,
-    evidence_prerequisites=_EVIDENCE_PREREQUISITES,
-    never_ask=_NEVER_ASK,
-)
+
+def make_qa_engine(strategy: str = "eig", **posterior_kwargs) -> QAEngine:
+    """Build a QAEngine; posterior_kwargs (posterior="rf"|"nb") are for evals."""
+    return QAEngine(
+        clf=_clf,
+        feature_names=FEATURE_NAMES,
+        label_classes=LABEL_CLASSES,
+        evidences_meta=EVIDENCES_META,
+        disease_relevant_evidences=_DISEASE_RELEVANT_EVIDENCES,
+        question_translations=_QUESTION_TRANSLATIONS,
+        evidence_prerequisites=_EVIDENCE_PREREQUISITES,
+        never_ask=_NEVER_ASK,
+        likelihoods=LIKELIHOODS,
+        posterior_fn=lambda ev, ab, age, sex: class_posterior(ev, ab, age, sex, **posterior_kwargs),
+        pool_fn=pool_classes,
+        tier_of=tier_of,
+        strategy=strategy,
+    )
+
+
+qa_engine = make_qa_engine()
 logger.info("QAEngine initialised successfully")

@@ -1,0 +1,3 @@
+-r requirements.txt
+pytest>=8
+pgserver>=0.1.4  # throwaway PostgreSQL for test_api.py

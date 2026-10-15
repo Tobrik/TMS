@@ -1,20 +1,26 @@
 """
 QA Engine for two-round diagnostic questioning.
 
+Default strategy "eig" — expected information gain. For each candidate
+question, with P(e|d) counted from DDXPlus patients:
+    P(yes)        = Σ_d P(d) · P(e|d)
+    P(d | yes)    ∝ P(d) · P(e|d)          P(d | no) ∝ P(d) · (1 − P(e|d))
+    EIG           = H(D) − [P(yes)·H(D|yes) + P(no)·H(D|no)]
+plus RISK_WEIGHT × the same quantity over the triage tier (red/yellow/green),
+so questions that settle "is this dangerous?" are preferred. Both answers
+count: "no" is as informative as "yes".
+
+Legacy strategy "jsd" (kept for eval/simulate.py comparisons):
 Round 1 — Symptom Exploration: maximise Jensen-Shannon divergence across the
-full disease space (no confirmation bias toward any single diagnosis).
-
-Round 2 — Disease Discrimination: maximise separation between top-1 and top-2
-diagnoses once the symptom vector is sufficiently populated.
-
-Uses the existing trained RandomForest model without retraining.
+full disease space. Round 2 — Disease Discrimination: maximise separation
+between top-1 and top-2 diagnoses. "No" answers carry no information.
 """
 
 from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Dict, FrozenSet, List, Optional, Set, Tuple
+from typing import Callable, Dict, FrozenSet, Iterable, List, Optional, Set, Tuple
 
 import numpy as np
 from scipy.spatial.distance import jensenshannon
@@ -22,10 +28,21 @@ from scipy.spatial.distance import jensenshannon
 logger = logging.getLogger("tms.qa_engine")
 
 # ─── Thresholds ──────────────────────────────────────────────────────────────
-EXPLORATION_EXIT_CONFIDENCE = 0.45   # move from round 1 → round 2
+EXPLORATION_EXIT_CONFIDENCE = 0.45   # move from round 1 → round 2 (jsd)
 STOP_CONFIDENCE = 0.70               # stop asking altogether
 MAX_ROUNDS = 2                       # round 1 + round 2
-BROAD_SYMPTOM_THRESHOLD = 0.30       # evidence is "broad" if relevant to ≥30% diseases
+BROAD_SYMPTOM_THRESHOLD = 0.30       # evidence is "broad" if relevant to ≥30% diseases (jsd)
+RISK_WEIGHT = 1.0                    # weight of tier information vs disease information (eig)
+MIN_EIG = 0.01                       # bits; below this no question is worth asking (eig)
+
+TIERS = ("red", "yellow", "green")
+
+
+def _entropy(p: np.ndarray, axis: int = 0) -> np.ndarray:
+    """Shannon entropy in bits along `axis`; 0·log 0 = 0."""
+    with np.errstate(divide="ignore", invalid="ignore"):
+        terms = np.where(p > 0, p * np.log2(p), 0.0)
+    return -terms.sum(axis=axis)
 
 
 # ─── Result dataclasses ─────────────────────────────────────────────────────
@@ -33,6 +50,7 @@ BROAD_SYMPTOM_THRESHOLD = 0.30       # evidence is "broad" if relevant to ≥30%
 @dataclass
 class QuestionCandidate:
     evidence_id: str
+    question_en: str
     question_ru: str
     question_kk: str
     score: float
@@ -62,6 +80,11 @@ class QAEngine:
         question_translations: Dict[str, Dict[str, str]],
         evidence_prerequisites: Dict[str, str],
         never_ask: Set[str],
+        likelihoods: Optional[np.ndarray] = None,
+        posterior_fn: Optional[Callable[..., np.ndarray]] = None,
+        pool_fn: Optional[Callable[[np.ndarray], Dict[str, float]]] = None,
+        tier_of: Optional[Callable[[str], str]] = None,
+        strategy: str = "eig",
     ) -> None:
         self.clf = clf
         self.feature_names = feature_names
@@ -71,6 +94,12 @@ class QAEngine:
         self.question_translations = question_translations
         self.evidence_prerequisites = evidence_prerequisites
         self.never_ask = never_ask
+        self.likelihoods = likelihoods
+        self.posterior_fn = posterior_fn
+        self.pool_fn = pool_fn
+        self.strategy = strategy
+        if strategy == "eig" and (likelihoods is None or posterior_fn is None or pool_fn is None):
+            raise ValueError("strategy='eig' needs likelihoods, posterior_fn and pool_fn")
 
         self._feat_idx: Dict[str, int] = {
             name: i for i, name in enumerate(feature_names)
@@ -86,6 +115,12 @@ class QAEngine:
 
         # Pre-compute "broad" evidences (relevant to ≥30% of diseases)
         self._broad_evidences: Set[str] = self._compute_broad_evidences()
+
+        # (n_tiers, n_classes) one-hot: which triage tier each class belongs to
+        tier_of = tier_of or (lambda _d: "green")
+        self._tier_matrix = np.array(
+            [[1.0 if tier_of(d) == t else 0.0 for d in label_classes] for t in TIERS]
+        )
 
     # ─── Internal helpers ────────────────────────────────────────────────
 
@@ -131,13 +166,23 @@ class QAEngine:
                 return False
         return True
 
-    def _base_candidates(self, ev_set: Set[str]) -> List[str]:
-        """Return candidate evidence IDs after universal filters."""
+    def _base_candidates(self, ev_set: Set[str], asked: Set[str] = frozenset()) -> List[str]:
+        """Return candidate evidence IDs after universal filters.
+
+        Antecedents (risk factors and history: travel, surgery, smoking...) are
+        asked by the "eig" strategy when a translated question exists; the
+        legacy "jsd" strategy never asks them."""
+        def askable(ev_id: str) -> bool:
+            if not self.evidences_meta.get(ev_id, {}).get("is_antecedent", False):
+                return True
+            return self.strategy == "eig" and ev_id in self.question_translations
+
         return [
             ev_id
             for ev_id in self._binary_evs
             if ev_id not in ev_set
-            and not self.evidences_meta.get(ev_id, {}).get("is_antecedent", False)
+            and ev_id not in asked
+            and askable(ev_id)
             and ev_id not in self.never_ask
             and self._prereq_ok(ev_id, ev_set)
         ]
@@ -261,15 +306,84 @@ class QAEngine:
         scores.sort(key=lambda x: x[1], reverse=True)
         return scores
 
+    # ─── Expected information gain ───────────────────────────────────────
+
+    def _score_eig(self, candidates: List[str], posterior: np.ndarray) -> List[Tuple[str, float]]:
+        """
+        Score candidates by expected reduction in entropy over diseases, plus
+        RISK_WEIGHT × expected reduction in entropy over triage tiers.
+        Vectorised: one (n_classes × n_candidates) likelihood slice, no RF calls.
+        """
+        if not candidates:
+            return []
+        p = posterior / posterior.sum()
+        lik = self.likelihoods[:, [self._feat_idx[c] for c in candidates]]  # (C, K)
+
+        p_yes = p @ lik                                                     # (K,)
+        post_yes = (p[:, None] * lik) / np.maximum(p_yes, 1e-12)
+        post_no = (p[:, None] * (1.0 - lik)) / np.maximum(1.0 - p_yes, 1e-12)
+
+        def expected_gain(prior: np.ndarray, yes: np.ndarray, no: np.ndarray) -> np.ndarray:
+            return _entropy(prior) - (p_yes * _entropy(yes) + (1.0 - p_yes) * _entropy(no))
+
+        gain = expected_gain(p, post_yes, post_no)
+        tiers = self._tier_matrix
+        gain = gain + RISK_WEIGHT * expected_gain(tiers @ p, tiers @ post_yes, tiers @ post_no)
+
+        scores = list(zip(candidates, gain.tolist()))
+        scores.sort(key=lambda x: x[1], reverse=True)
+        return scores
+
+    def _get_questions_eig(
+        self,
+        evidences: List[str],
+        absent: List[str],
+        age: Optional[int],
+        sex: Optional[str],
+        round_num: int,
+        n_questions: int,
+    ) -> QAResult:
+        posterior = self.posterior_fn(evidences, absent, age, sex)
+        pooled = self.pool_fn(posterior)
+        top3 = list(pooled.items())[:3]
+        confidence = top3[0][1] if top3 else 0.0
+
+        if round_num > MAX_ROUNDS:
+            return QAResult([], True, "max_rounds", top3, confidence, "none")
+        if confidence >= STOP_CONFIDENCE:
+            return QAResult([], True, "high_confidence", top3, confidence, "none")
+
+        candidates = self._base_candidates(set(evidences), asked=set(absent))
+        scored = [(ev, s) for ev, s in self._score_eig(candidates, posterior) if s >= MIN_EIG]
+        if not scored:
+            return QAResult([], True, "no_candidates", top3, confidence, "eig")
+
+        questions = [self._question(ev_id, score, "eig") for ev_id, score in scored[:n_questions]]
+        return QAResult(questions, False, "", top3, confidence, "eig")
+
+    def _question(self, ev_id: str, score: float, reason_prefix: str) -> QuestionCandidate:
+        meta = self.evidences_meta.get(ev_id, {})
+        q_en = meta.get("question_en", ev_id)
+        trans = self.question_translations.get(ev_id, {})
+        return QuestionCandidate(
+            evidence_id=ev_id,
+            question_en=q_en,
+            question_ru=trans.get("ru", q_en),
+            question_kk=trans.get("kk", q_en),
+            score=score,
+            reason=f"{reason_prefix}:{score:.4f}",
+        )
+
     # ─── Public API ──────────────────────────────────────────────────────
 
     def get_questions(
         self,
         evidences: List[str],
-        age: int = 25,
-        sex: str = "M",
+        age: Optional[int] = None,
+        sex: Optional[str] = None,
         round_num: int = 1,
         n_questions: int = 3,
+        absent: Iterable[str] = (),
     ) -> QAResult:
         if self.clf is None or self._n_features == 0:
             return QAResult(
@@ -277,6 +391,13 @@ class QAEngine:
                 top3=[], confidence=0.0, round_type="none",
             )
 
+        if self.strategy == "eig":
+            return self._get_questions_eig(
+                list(evidences), list(absent), age, sex, round_num, n_questions,
+            )
+
+        age = 25 if age is None else age
+        sex = sex or "M"
         base_vec = self._build_feature_vector(evidences, age, sex)
         base_proba = self._get_proba(base_vec)
         top3 = self._top3(base_proba)
@@ -353,20 +474,9 @@ class QAEngine:
 
         # ── Build question list (with diversity) ─────────────────────────
         diverse_top = self._select_diverse(scored, n_questions)
-        questions: List[QuestionCandidate] = []
-        for ev_id, score in diverse_top:
-            meta = self.evidences_meta.get(ev_id, {})
-            q_en = meta.get("question_en", ev_id)
-            trans = self.question_translations.get(ev_id, {})
-            questions.append(
-                QuestionCandidate(
-                    evidence_id=ev_id,
-                    question_ru=trans.get("ru", q_en),
-                    question_kk=trans.get("kk", q_en),
-                    score=score,
-                    reason=f"{reason_prefix}:{score:.4f}",
-                )
-            )
+        questions: List[QuestionCandidate] = [
+            self._question(ev_id, score, reason_prefix) for ev_id, score in diverse_top
+        ]
 
         should_stop = len(questions) == 0
         stop_reason = "no_candidates" if should_stop else ""

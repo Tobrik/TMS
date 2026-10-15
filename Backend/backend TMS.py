@@ -1,5 +1,6 @@
 import os
 import json
+import asyncio
 import base64
 import logging
 import uuid
@@ -29,7 +30,12 @@ from auth import (
     require_patient_or_doctor,
 )
 from crypto_utils import encrypt_field, decrypt_field
-from ml_model import sklearn_predict, validate_evidences, qa_engine
+from ml_model import (
+    LABEL_CLASSES, explain_prediction, predict_distribution, qa_engine, validate_evidences,
+)
+import extraction
+import llm
+import triage
 
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
@@ -101,8 +107,10 @@ class SymptomsRequest(BaseModel):
 
 class AnalysRequest(BaseModel):
     evidences: List[str] = Field(..., min_length=1, max_length=300)
-    age: int = Field(default=25, ge=0, le=120)
-    sex: str = Field(default="M", pattern="^[MF]$")
+    absent: List[str] = Field(default_factory=list, max_length=300)  # explicitly denied
+    age: Optional[int] = Field(default=None, ge=0, le=120)          # None = not stated
+    sex: Optional[str] = Field(default=None, pattern="^[MF]$")
+    intake_id: Optional[int] = Field(default=None, gt=0)            # from /extract_symptoms
     diagnose_setup: str = "Nothing"
 
 class ExtractSymptomsRequest(BaseModel):
@@ -110,15 +118,15 @@ class ExtractSymptomsRequest(BaseModel):
 
 class NextQuestionsRequest(BaseModel):
     evidences: List[str] = Field(..., min_length=1, max_length=300)
-    age: int = Field(default=25, ge=0, le=120)
-    sex: str = Field(default="M", pattern="^[MF]$")
+    absent: List[str] = Field(default_factory=list, max_length=300)
+    age: Optional[int] = Field(default=None, ge=0, le=120)
+    sex: Optional[str] = Field(default=None, pattern="^[MF]$")
     n: int = Field(default=3, ge=1, le=5)
     round_num: int = Field(default=1, ge=1, le=3)
 
-class SaveExplanationRequest(BaseModel):
+class ExplainRequest(BaseModel):
     day_id: int = Field(..., gt=0)
-    patient_explanation: str = ""
-    doctor_explanation: str = ""
+    lang: str = Field(default="ru", pattern="^(ru|en|kk)$")
 
 class UpdateByDoctorRequest(BaseModel):
     patient_id: int = Field(..., gt=0)
@@ -417,10 +425,25 @@ def create_tables():
             image_filename TEXT
         );
 
+        -- v2 pipeline: one intake per free-text complaint (text + extraction +
+        -- safety review), linked to the diary day it produced.
+        CREATE TABLE IF NOT EXISTS intakes (
+            intake_id SERIAL PRIMARY KEY,
+            patient_id INTEGER NOT NULL REFERENCES patients(patient_id) ON DELETE CASCADE,
+            created_at TIMESTAMP DEFAULT NOW(),
+            text TEXT,
+            result_json TEXT
+        );
+        ALTER TABLE diary_days ADD COLUMN IF NOT EXISTS zone TEXT;
+        ALTER TABLE diary_days ADD COLUMN IF NOT EXISTS analysis_json TEXT;
+        ALTER TABLE diary_days ADD COLUMN IF NOT EXISTS intake_id INTEGER
+            REFERENCES intakes(intake_id) ON DELETE SET NULL;
+
         CREATE INDEX IF NOT EXISTS idx_days_patient ON diary_days(patient_id, day_id);
         CREATE INDEX IF NOT EXISTS idx_days_doctor  ON diary_days(doctor_id, day_id);
         CREATE INDEX IF NOT EXISTS idx_sym_code     ON diary_symptoms(symptom_code);
         CREATE INDEX IF NOT EXISTS idx_lab_patient  ON lab_results(patient_id);
+        CREATE INDEX IF NOT EXISTS idx_intake_patient ON intakes(patient_id);
         """)
         conn.commit()
     finally:
@@ -545,8 +568,14 @@ def insert_disease(
     doctor_id: Optional[int] = None,
     recept: Optional[str] = None,
     patient_explanation: Optional[str] = None,
-    doctor_explanation: Optional[str] = None
+    doctor_explanation: Optional[str] = None,
+    absent: Optional[List[str]] = None,
+    zone: Optional[str] = None,
+    analysis: Optional[dict] = None,
+    intake_id: Optional[int] = None,
 ) -> int:
+    """disease_predict is the top-1 disease name and score its probability
+    (v1 stored the space-joined top-3 names and their average)."""
 
     if recept is None:
         recept = disease_recommendations.get(
@@ -567,9 +596,12 @@ def insert_disease(
                 disease_setup,
                 recept,
                 patient_explanation,
-                doctor_explanation
+                doctor_explanation,
+                zone,
+                analysis_json,
+                intake_id
             )
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s) RETURNING day_id
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING day_id
         """, (
             patient_id,
             doctor_id,
@@ -579,13 +611,16 @@ def insert_disease(
             encrypt_field(recept),
             encrypt_field(patient_explanation),
             encrypt_field(doctor_explanation),
+            zone,
+            encrypt_field(json.dumps(analysis, ensure_ascii=False)) if analysis is not None else None,
+            intake_id,
         ))
 
         day_id = cur.fetchone()[0]
 
-        # Store each evidence token as a symptom row (value=1 means present)
-        if evidences:
-            rows = [(day_id, ev, 1) for ev in evidences]
+        # One row per evidence token: value=1 reported present, value=0 denied
+        rows = [(day_id, ev, 1) for ev in evidences] + [(day_id, ev, 0) for ev in (absent or [])]
+        if rows:
             cur.executemany("""
                 INSERT INTO diary_symptoms(day_id, symptom_code, value)
                 VALUES (%s,%s,%s)
@@ -596,6 +631,50 @@ def insert_disease(
         return day_id
     finally:
         conn.close()
+
+
+def insert_intake(patient_id: int, text: str, result: dict) -> int:
+    conn = connect()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO intakes(patient_id, text, result_json) VALUES (%s,%s,%s) RETURNING intake_id",
+            (patient_id, encrypt_field(text), encrypt_field(json.dumps(result, ensure_ascii=False))),
+        )
+        intake_id = cur.fetchone()[0]
+        conn.commit()
+        return intake_id
+    finally:
+        conn.close()
+
+
+def get_intake(intake_id: int, patient_id: int) -> Optional[Dict[str, Any]]:
+    """The intake if it belongs to this patient, else None."""
+    conn = connect()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT text, result_json FROM intakes WHERE intake_id = %s AND patient_id = %s",
+            (intake_id, patient_id),
+        )
+        row = cur.fetchone()
+        if not row:
+            return None
+        return {"text": decrypt_field(row[0]) or "", "result": json.loads(decrypt_field(row[1]) or "{}")}
+    finally:
+        conn.close()
+
+
+def top1_name(disease_predict: Optional[str]) -> str:
+    """Top-1 disease from a stored disease_predict. v1 rows hold the space-joined
+    top-3 ("Possible NSTEMI / STEMI URTI Bronchitis"), so splitting on spaces is
+    wrong; match the longest known disease name at the start instead."""
+    if not disease_predict:
+        return ""
+    for name in sorted(LABEL_CLASSES, key=len, reverse=True):
+        if disease_predict == name or disease_predict.startswith(name + " "):
+            return name
+    return disease_predict
 
 def update_recept(day_id: int, recept_text: str) -> None:
     conn = connect()
@@ -690,7 +769,8 @@ def get_patient_history(patient_id: int, limit: int = 30) -> List[Dict[str, Any]
                 d.doctor_id,
                 doc.full_name,
                 d.patient_explanation,
-                d.doctor_explanation
+                d.doctor_explanation,
+                d.zone
             FROM diary_days d
             LEFT JOIN doctors doc ON doc.doctor_id = d.doctor_id
             WHERE d.patient_id = %s
@@ -702,14 +782,15 @@ def get_patient_history(patient_id: int, limit: int = 30) -> List[Dict[str, Any]
         return [{
             "day_id": r[0],
             "created_at": str(r[1]),
-            "disease_predict": decrypt_field(r[2]),
+            "disease_predict": top1_name(decrypt_field(r[2])),
             "score": r[3],
             "disease_setup": decrypt_field(r[4]),
             "recept": decrypt_field(r[5]),
             "doctor_id": r[6],
-            "doctor_name": r[7],
+            "doctor_name": decrypt_field(r[7]),
             "patient_explanation": decrypt_field(r[8]),
             "doctor_explanation": decrypt_field(r[9]),
+            "zone": r[10],
         } for r in rows]
     finally:
         conn.close()
@@ -734,100 +815,8 @@ def get_symptom_graph(patient_id: int, symptom_code: str) -> List[Dict[str, Any]
     finally:
         conn.close()
 
-# model_predict() removed — use sklearn_predict() from ml_model.py
-
-RED_ZONE_DISEASES = {
-    "Anaphylaxis", "Boerhaave", "Ebola", "Epiglottitis",
-    "Acute pulmonary edema", "Possible NSTEMI / STEMI", "Pulmonary embolism",
-    "Spontaneous pneumothorax", "Unstable angina",
-}
-YELLOW_ZONE_DISEASES = {
-    "Atrial fibrillation", "Bronchospasm / acute asthma exacerbation",
-    "Guillain-Barré syndrome", "HIV (initial infection)", "Myocarditis",
-    "Pancreatic neoplasm", "PSVT", "Pneumonia", "Pulmonary neoplasm",
-    "Stable angina", "Tuberculosis",
-}
-
-# ─── Symptom-based red flags (safety layer) ──────────────────────────────────
-# These override the disease-based classification.
-# Medical triage depends on SYMPTOMS, not on what the model guessed.
-# If ANY of these evidences are present → force that zone regardless of diagnosis.
-
-RED_FLAG_EVIDENCES = {
-    # Stridor = airway obstruction → minutes to death
-    "E_112",
-    # Chest pain at rest → possible ACS
-    "E_14",
-    # Syncope / loss of consciousness
-    # "E_82" is dizziness which is yellow, not red
-}
-
-YELLOW_FLAG_EVIDENCES = {
-    # Fever (T≥38) — needs medical evaluation
-    "E_91",
-    # Pleuritic pain (pain on deep breathing) — pneumonia/PE marker
-    "E_220",
-    # Shortness of breath
-    "E_66",
-    # Dizziness / near-syncope
-    "E_82",
-    # Palpitations / tachycardia
-    "E_155",
-    # Repeated vomiting — dehydration risk
-    "E_211",
-}
-
-# Combinations that escalate to RED even if individual symptoms are only yellow
-RED_FLAG_COMBOS = [
-    # Fever + pleuritic pain = pneumonia until proven otherwise
-    {"E_91", "E_220"},
-    # Fever + shortness of breath = possible pneumonia/sepsis
-    {"E_91", "E_66"},
-    # Chest pain + sweating = ACS
-    {"E_14", "E_50"},
-    # Chest pain + radiation to left arm
-    {"E_14", "E_57_@_V_195"},
-    # Chest pain + radiation to jaw
-    {"E_14", "E_57_@_V_121"},
-    # Chest pain + nausea = ACS
-    {"E_14", "E_148"},
-]
-
-
-def classify_zone(disease: str, score: float, evidences: list = None) -> str:
-    """
-    Triage classification with symptom-based safety layer.
-
-    Priority order:
-      1. Red flag evidences / combos → "red" (regardless of diagnosis)
-      2. Yellow flag evidences → at least "yellow"
-      3. Disease name in RED_ZONE_DISEASES → "red"
-      4. Disease name in YELLOW_ZONE_DISEASES → "yellow"
-      5. Score thresholds → fallback
-    """
-    ev_set = set(evidences) if evidences else set()
-
-    # --- Safety layer: symptom-based flags OVERRIDE model output ---
-
-    # 1) Single red-flag symptoms
-    if ev_set & RED_FLAG_EVIDENCES:
-        return "red"
-
-    # 2) Red-flag COMBINATIONS (e.g. fever + pleuritic pain)
-    for combo in RED_FLAG_COMBOS:
-        if combo <= ev_set:  # combo is subset of patient evidences
-            return "red"
-
-    # 3) Any yellow-flag symptom → at least yellow
-    has_yellow_flag = bool(ev_set & YELLOW_FLAG_EVIDENCES)
-
-    # --- Disease-based classification ---
-    if disease in RED_ZONE_DISEASES or score > 0.6:
-        return "red"
-    if disease in YELLOW_ZONE_DISEASES or score > 0.5 or has_yellow_flag:
-        return "yellow"
-
-    return "green"
+# Triage lives in triage.py. Zones are computed once in /analys and stored with
+# the diary day, so the doctor's dashboard shows exactly what the patient saw.
 
 def get_all_patients_triage() -> list:
     conn = connect()
@@ -836,7 +825,7 @@ def get_all_patients_triage() -> list:
         cur.execute("""
             SELECT p.patient_id, p.full_name, p.city, p.created_at,
                    d.disease_predict, d.score, d.created_at as diag_date,
-                   d.day_id
+                   d.day_id, d.zone
             FROM patients p
             LEFT JOIN diary_days d ON d.day_id = (
                 SELECT MAX(d2.day_id) FROM diary_days d2 WHERE d2.patient_id = p.patient_id
@@ -846,21 +835,24 @@ def get_all_patients_triage() -> list:
         rows = cur.fetchall()
         result = []
         for r in rows:
-            disease = decrypt_field(r[4]) or ""
+            disease = top1_name(decrypt_field(r[4]))
             score = r[5] or 0.0
             day_id = r[7]
+            zone = r[8]
 
-            # Fetch stored evidences for symptom-based triage
-            evidences = []
-            if day_id:
-                cur.execute(
-                    "SELECT symptom_code FROM diary_symptoms WHERE day_id = %s",
-                    (day_id,),
-                )
-                evidences = [row[0] for row in cur.fetchall()]
+            if zone is None:
+                # v1 row: no stored zone. Re-assess from the top-1 disease and the
+                # reported symptoms (v1 stored the top-3 average as score, so it
+                # can't serve as a probability).
+                evidences = []
+                if day_id:
+                    cur.execute(
+                        "SELECT symptom_code FROM diary_symptoms WHERE day_id = %s AND value > 0",
+                        (day_id,),
+                    )
+                    evidences = [row[0] for row in cur.fetchall()]
+                zone = triage.assess({disease: 1.0} if disease else {}, evidences).zone
 
-            first_disease = disease.split(" ")[0] if disease else ""
-            zone = classify_zone(first_disease, score, evidences=evidences)
             result.append({
                 "patient_id": r[0],
                 "full_name": decrypt_field(r[1]),
@@ -884,228 +876,52 @@ def day_belongs_to_patient(day_id: int, patient_id: int) -> bool:
     finally:
         conn.close()
 
+def get_day_for_explanation(day_id: int, patient_id: int) -> Optional[Dict[str, Any]]:
+    """Everything /explain needs about one of the patient's diary days."""
+    conn = connect()
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT d.zone, d.analysis_json, i.text
+            FROM diary_days d
+            LEFT JOIN intakes i ON i.intake_id = d.intake_id
+            WHERE d.day_id = %s AND d.patient_id = %s
+        """, (day_id, patient_id))
+        row = cur.fetchone()
+        if not row:
+            return None
+        cur.execute("SELECT symptom_code, value FROM diary_symptoms WHERE day_id = %s", (day_id,))
+        symptoms = cur.fetchall()
+        return {
+            "zone": row[0],
+            "analysis": json.loads(decrypt_field(row[1]) or "{}") if row[1] else {},
+            "text": decrypt_field(row[2]) or "",
+            "evidences": [s[0] for s in symptoms if s[1] > 0],
+            "absent": [s[0] for s in symptoms if s[1] == 0],
+        }
+    finally:
+        conn.close()
+
+def save_explanations(day_id: int, patient_id: int, patient_explanation: str, doctor_explanation: str) -> None:
+    conn = connect()
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            UPDATE diary_days SET patient_explanation = %s, doctor_explanation = %s
+            WHERE day_id = %s AND patient_id = %s
+        """, (encrypt_field(patient_explanation), encrypt_field(doctor_explanation), day_id, patient_id))
+        conn.commit()
+    finally:
+        conn.close()
+
 # ─── Startup ───
 
 create_tables()
 seed_doctors()
 
-# ─── LLM extraction prompt (Groq LLaMA 3.3 70B) ────────────────────────────
-_LLM_EXTRACTION_PROMPT = """\
-You are a clinical NLP engine for a medical triage system operating in Central Asia (Kazakhstan/CIS).
-Your sole task: extract structured diagnostic evidence from a patient's free-text complaint.
-
-## OUTPUT CONTRACT
-Return ONLY valid JSON. No markdown, no preamble, no explanation, no code fences.
-Schema:
-{
-  "evidences": ["E_91", "E_55_@_V_89", ...],
-  "age": 32,
-  "sex": "M",
-  "negated": ["E_201"],
-  "uncertain": ["E_14"],
-  "implicit": ["E_175"],
-  "onset_days": 3,
-  "severity": "medium",
-  "extraction_notes": "brief internal reasoning, 1-2 sentences max"
-}
-
-- evidences: confirmed positive findings → DDXPlus binary evidence IDs
-- negated: explicitly denied symptoms (DO NOT include in evidences)
-- uncertain: mentioned with doubt ("возможно", "кажется", "might have")
-- implicit: inferred from context but not stated directly (e.g. "лежу 3 дня" → E_88)
-- age: integer or null
-- sex: "M", "F", or null
-- onset_days: how many days since symptoms started (integer or null)
-- severity: "mild" | "medium" | "severe" | null
-- extraction_notes: 1 sentence explaining your main extraction decisions
-
-## EVIDENCE ID REFERENCE
-Map patient symptoms to these DDXPlus binary evidence IDs:
-
-### Systemic / Fever
-E_91 — fever / temperature (температура, қызба)
-E_94 — chills / shivers (озноб, қалтырау)
-E_50 — increased sweating (потеет, терлеу)
-E_175 — fatigue / malaise (слабость, усталость, әлсіздік)
-E_88 — extreme fatigue / bedridden (не может встать, лежит весь день)
-E_89 — non-restful sleep / insomnia (плохой сон, бессонница)
-E_144 — diffuse muscle pain / myalgia (ломота, мышечные боли, бұлшықет ауру)
-E_162 — unintentional weight loss (похудел, теряет вес)
-E_161 — decreased appetite (нет аппетита, жоқ тәбет)
-E_96 — weight gain (набрал вес)
-
-### Pain (requires E_53 = pain present)
-E_53 — pain present (есть боль, any pain)
-E_55_@_V_89 — pain location: forehead/head (голова, бас)
-E_55_@_V_166 — pain location: temple (висок)
-E_55_@_V_124 — pain location: occiput (затылок)
-E_55_@_V_62 — pain location: top of head (макушка)
-E_55_@_V_101 — pain location: upper chest/sternum (грудь, кеуде)
-E_55_@_V_55 — pain location: side of chest (бок груди)
-E_55_@_V_148 — pain location: pharynx/throat (горло, тамақ)
-E_55_@_V_129 — pain location: ear (ухо)
-E_55_@_V_187 — pain location: abdomen/belly (живот, іш)
-E_55_@_V_87 — pain location: right iliac fossa (правый низ живота)
-E_55_@_V_197 — pain location: epigastrium (эпигастрий, под ложечкой)
-E_55_@_V_26 — pain location: neck (шея)
-E_55_@_V_40 — pain location: lower back (поясница, спина)
-E_55_@_V_92 — pain location: knee (колено)
-E_55_@_V_194 — pain location: shoulder (плечо)
-E_55_@_V_127 — pain location: scapula (лопатка)
-E_55_@_V_16 — pain location: groin (пах)
-E_57_@_V_195 — pain radiates to left arm/shoulder (отдаёт в левую руку)
-E_57_@_V_121 — pain radiates to jaw (отдаёт в челюсть)
-E_54_@_V_184 — pain character: pulsating/throbbing (пульсирует)
-E_54_@_V_192 — pain character: sharp/stabbing (острая, резкая)
-E_54_@_V_179 — pain character: stabbing/knife (колющая)
-E_54_@_V_154 — pain character: dull/aching (тупая, ноющая)
-E_54_@_V_182 — pain character: cramping/spasm (схваткообразная)
-E_54_@_V_183 — pain character: pressing/crushing (давящая, сжимающая)
-E_54_@_V_181 — pain character: burning (жжение)
-
-### Respiratory
-E_201 — cough (кашель, жөтел)
-E_77 — colored/abundant sputum (мокрота, қақырық)
-E_181 — nasal congestion / runny nose (насморк, мұрын бітелу)
-E_182 — purulent nasal discharge green/yellow (гнойные выделения)
-E_66 — shortness of breath / dyspnea (одышка, ентігу)
-E_64 — breathless on minimal exertion (задыхается при малейшей нагрузке)
-E_67 — nocturnal dyspnea, wakes up breathless (ночная одышка)
-E_214 — wheezing on exhale (свист на выдохе, хрипы)
-E_112 — stridor / wheezing on inhale (стридор, шум на вдохе)
-E_220 — pain on deep breathing / pleuritic (больно при вдохе)
-E_45 — hemoptysis / coughing blood (кровь при кашле)
-E_203 — severe paroxysmal coughing fits (приступы сильного кашля)
-E_97 — sore throat (боль в горле, тамақ ауру)
-E_212 — hoarse voice / lost voice (осип, охрип, голос пропал)
-E_65 — difficulty swallowing / dysphagia (трудно глотать)
-
-### Cardiovascular
-E_14 — chest pain at rest (боль в груди в покое)
-E_155 — palpitations / racing heart (сердцебиение, тахикардия)
-E_164 — irregular heartbeat / arrhythmia (аритмия, нерегулярный пульс)
-E_82 — dizziness / near-syncope (головокружение, бас айналу)
-E_159 — loss of consciousness / syncope (потеря сознания)
-
-### Gastrointestinal
-E_148 — nausea / vomiting (тошнота, рвота, лоқсу)
-E_211 — repeated vomiting >=2x (многократная рвота)
-E_51 — diarrhea (понос, диарея)
-E_173 — heartburn / acid reflux (изжога)
-E_30 — bloating / abdominal distension (вздутие)
-E_140 — black/tarry stool (чёрный стул, мелена)
-E_179 — blood in stool (кровь в стуле)
-E_210 — vomiting blood (рвота с кровью)
-
-### Neurological
-E_103 — loss of smell (потеря запаха, иіс сезу жоқ)
-E_177 — numbness / tingling (онемение, покалывание)
-E_93 — numbness in feet specifically (онемение стоп)
-E_84 — bilateral limb weakness (слабость в обеих руках/ногах)
-E_156 — facial weakness/paralysis (слабость лица)
-E_52 — double vision / diplopia (двоение в глазах)
-E_172 — drooping eyelid / ptosis (опущение века)
-E_39 — confusion / disorientation (спутанность сознания)
-E_43 — seizures / convulsions (судороги, припадок)
-E_192 — neck muscle spasm (спазм мышц шеи)
-E_193 — facial/body muscle spasms (спазмы мышц лица/тела)
-E_168 — can't control tongue (язык вываливается)
-E_205 — can't open mouth / trismus (не может открыть рот)
-E_111 — fear of dying (страх смерти)
-E_171 — depersonalization / derealization (ощущение нереальности)
-
-### Skin / Eyes / ENT
-E_129 — rash / skin lesion (сыпь, бөртпе)
-E_74 — red eyes / conjunctivitis (красные глаза)
-E_9 — swollen lymph nodes (лимфоузлы увеличены)
-E_127 — increased tearing / watery eyes (слезятся глаза)
-E_154 — pale skin / pallor (бледность)
-E_92 — facial flushing / red cheeks (покраснение лица)
-E_151 — localized swelling / edema (отёк)
-E_178 — unusual bleeding / bruising (необычные синяки, кровотечения)
-E_169 — itchy nose / postnasal drip (зуд в носу, аллергия)
-E_170 — intense eye itching (сильный зуд в глазах)
-
-### Modifiers / Context
-E_220 — pain worse on deep breath (боль при дыхании)
-E_217 — symptoms worse lying, better sitting (хуже лёжа, лучше сидя)
-E_218 — symptoms worse with exertion (хуже при нагрузке)
-E_219 — symptoms worse at night (хуже ночью)
-E_216 — pain worse with movement (хуже при движении)
-E_221 — worse with coughing/straining (хуже при кашле/натуживании)
-E_215 — symptoms worse after eating (хуже после еды)
-E_33 — pain better leaning forward (легче наклонившись вперёд)
-E_13 — symptoms progressively worsening over 2 weeks (ухудшается 2 недели)
-E_41 — contact with sick person (контакт с больным)
-E_116 — had cold in past 2 weeks (простыл недавно)
-E_99 — history of migraines (мигрень в анамнезе)
-
-### Comorbidities / History
-E_105 — history of heart attack / angina (инфаркт/стенокардия в анамнезе)
-E_106 — heart failure (сердечная недостаточность)
-E_123 — asthma history (астма)
-E_124 — uses bronchodilator (использует ингалятор)
-E_69 — diabetes (диабет)
-E_102 — hypertension (высокое давление)
-E_79 — smoker (курит)
-E_23 — sleep apnea (апноэ сна)
-E_86 — family history of allergy/eczema (аллергия у родственников)
-
-## EXTRACTION RULES
-
-### RULE 1 — NEGATION (critical)
-Negated symptoms go to "negated" array only. NEVER put them in "evidences".
-Negation patterns: "не [symptom]", "нет [symptom]", "без [symptom]", "[symptom] нет",
-"[symptom] жоқ", "[symptom] емес", "no [symptom]", "denies [symptom]", "without [symptom]"
-
-### RULE 2 — PAIN DECOMPOSITION
-Any mention of pain REQUIRES at minimum E_53 (pain present).
-Add the most specific location code if location is mentioned.
-Add character code (E_54_@_V_*) only if explicitly described.
-  "болит голова" → [E_53, E_55_@_V_89]
-  "острая боль в груди" → [E_53, E_55_@_V_101, E_14, E_54_@_V_192]
-
-### RULE 3 — IMPLICIT SYMPTOMS (add to "implicit" array AND "evidences")
-Infer clinically obvious signs from context:
-  "не встаю с кровати 3 дня" → add E_88, E_175
-  "ничего не ем второй день" → add E_161
-
-### RULE 4 — TEMPORAL EXTRACTION
-  "3 дня" / "3 күн" / "3 days" → onset_days: 3
-  "неделю" / "апта" / "a week" → onset_days: 7
-  "давно" / "уже долго" → onset_days: null
-
-### RULE 5 — SEVERITY ESTIMATION
-mild: can function normally. medium: interferes with daily activity.
-severe: can't function, emergency markers (E_14 at rest, E_112, E_159, E_210, E_140 → always "severe").
-
-### RULE 6 — VOMITING DISAMBIGUATION
-E_148 = nausea OR single vomiting. E_211 = explicitly REPEATED vomiting only.
-
-### RULE 7 — DO NOT INFER CARDIAC WITHOUT EXPLICIT EVIDENCE
-NEVER add E_14, E_57_@_V_195, E_57_@_V_121 based on headache or fever alone.
-
-### RULE 8 — DEMOGRAPHIC EXTRACTION
-Age: extract from numeric mentions. Sex: "мужчина/ер адам/man" → "M", "женщина/әйел/woman" → "F".
-
-### RULE 9 — KAZAKH LANGUAGE
-Detect by: ә, ғ, қ, ң, ө, ұ, ү, һ, і. Apply same extraction logic.
-
-### RULE 10 — UNCERTAINTY / HEDGING
-"кажется", "возможно", "наверное", "может быть", "мүмкін" → put in "uncertain", NOT in "evidences".
-
-## ABSOLUTE PROHIBITIONS
-- Never add E_14 without explicit mention of chest pain
-- Never add E_57_@_V_195 based on chest pain alone
-- Never add E_112 based on wheezing alone
-- Never fabricate symptoms not present in text
-- Never add cardiac markers from anxiety descriptions unless explicitly stated
-- Never add E_211 from single vomiting mention
-"""
-
 app = FastAPI(
     title="TMS API",
-    description="Therapist Machine Support — AI-powered pediatric symptom analysis and triage system",
+    description="Therapist Machine Support — AI-assisted symptom analysis and triage system",
     version="1.0.0",
 )
 
@@ -1215,45 +1031,82 @@ async def get_symptoms_endpoint(body: SymptomsRequest, user: dict = Depends(requ
     graph = get_symptom_graph(body.patient_id, body.symptom_str)
     return {"symptoms_arr": graph}
 
+def _clean(evidences: List[str], where: str) -> List[str]:
+    valid, invalid = validate_evidences(list(dict.fromkeys(evidences)))
+    if invalid:
+        logger.warning("%s: dropped %d unknown evidence tokens", where, len(invalid))
+    return valid
+
+
+def _recommendation(disease: str, zone: str, review: Optional[dict]) -> str:
+    text = disease_recommendations.get(disease, "Консультация врача обязательна.")
+    if review and review.get("out_of_scope"):
+        likely = review.get("likely_condition")
+        text = ("Ваши симптомы могут указывать на состояние, которое система не умеет оценивать"
+                + (f" (возможно: {likely})" if likely else "")
+                + ". Результат ниже может быть неточным — обязательно обратитесь к врачу. " + text)
+    if zone == "red":
+        text = "⚠️ СРОЧНО обратитесь к врачу или вызовите скорую помощь! " + text
+    return text
+
+
 @app.post("/analys")
 async def analys_endpoint(body: AnalysRequest, user: dict = Depends(require_patient)):
     patient_id = user["patient_id"]
+    evidences = _clean(body.evidences, "analys")
+    absent = [e for e in _clean(body.absent, "analys") if e not in set(evidences)]
+    if not evidences:
+        raise HTTPException(status_code=422, detail="No valid evidences")
 
-    top3 = sklearn_predict(body.evidences, age=body.age, sex=body.sex, top_n=3)
-    top1_name, top1_score = top3[0]
+    review = None
+    if body.intake_id is not None:
+        intake = get_intake(body.intake_id, patient_id)
+        if intake is None:
+            raise HTTPException(status_code=403, detail="Access denied")
+        review = intake["result"].get("review")
 
-    preliminary_diagnose = " ".join(name for name, _ in top3)
+    distribution = predict_distribution(evidences, body.age, body.sex, absent)
+    top3 = list(distribution.items())[:3]
+    top1, top1_score = top3[0]
+    assessed = triage.assess(distribution, evidences, review)
+    out_of_scope = bool(review and review.get("out_of_scope"))
+    likely_condition = review.get("likely_condition") if out_of_scope else None
 
-    avg_score = sum(sc for _, sc in top3) / len(top3)
     day = insert_disease(
         patient_id,
-        body.evidences,
-        preliminary_diagnose,
-        avg_score,
+        evidences,
+        top1,
+        top1_score,
         body.diagnose_setup,
+        absent=absent,
+        zone=assessed.zone,
+        analysis={
+            "top3": [[name, round(p, 4)] for name, p in top3],
+            "reasons": assessed.reasons,
+            "red_mass": round(assessed.red_mass, 4),
+            "yellow_mass": round(assessed.yellow_mass, 4),
+            "age": body.age,
+            "sex": body.sex,
+            "out_of_scope": out_of_scope,
+            "likely_condition": likely_condition,
+        },
+        intake_id=body.intake_id,
     )
-
-    slices = [
-        {"name": name, "label": disease_labels.get(name, name), "score": sc}
-        for name, sc in top3
-    ]
-
-    zone = classify_zone(top1_name, top1_score, evidences=body.evidences)
-
-    # Override recommendation for red zone with urgent message
-    recommendation = disease_recommendations.get(top1_name, "Консультация врача обязательна.")
-    if zone == "red":
-        recommendation = "⚠️ СРОЧНО обратитесь к врачу или вызовите скорую помощь! " + recommendation
 
     return {
         "day": day,
-        "diseaseName": top1_name,
-        "diseaseLabel": disease_labels.get(top1_name, top1_name),
-        "doctor": disease_doctors.get(top1_name, "Терапевт"),
-        "recommendation": recommendation,
-        "slices": slices,
+        "diseaseName": top1,
+        "diseaseLabel": disease_labels.get(top1, top1),
+        "doctor": disease_doctors.get(top1, "Терапевт"),
+        "recommendation": _recommendation(top1, assessed.zone, review),
+        "slices": [
+            {"name": name, "label": disease_labels.get(name, name), "score": sc}
+            for name, sc in top3
+        ],
         "score": top1_score,
-        "zone": zone,
+        "zone": assessed.zone,
+        "reasons": assessed.reasons,
+        "out_of_scope": {"likely_condition": likely_condition} if out_of_scope else None,
     }
 
 
@@ -1265,152 +1118,34 @@ async def extract_symptoms_endpoint(
     user: dict = Depends(require_patient),
 ):
     """
-    3-layer symptom extraction pipeline (all layers always run):
-      Layer 1: Groq LLaMA 3.3 70B — context, negation, implicit symptoms, temporal markers.
-      Layer 2: Vocab regex + BM25 — catches medical terms LLM may have normalized.
-      Layer 3: QAEngine picks up missing binary features via /next_questions.
-    Smart merge: union of all layers, filtered by LLM negation list.
+    Free text → evidence tokens, with status (present / absent / uncertain) and
+    the patient's own words (Groq) or a confidence (Clef) for each — see
+    extraction.extract_complaint. Stores an intake (text, findings, safety
+    review) that /analys reads by intake_id.
     """
-    import httpx as _httpx
-    from retrieval import get_retriever, vocab_extract, extract_age_sex
+    result = (await extraction.extract_complaint(body.text)).to_dict()
+    intake_id = insert_intake(user["patient_id"], body.text, result)
 
-    # ── Layer 1: Groq LLaMA 3.3 70B (context + negation + implicit) ─
-    llm_confirmed: List[str] = []
-    llm_negated: set = set()
-    llm_uncertain: List[str] = []
-    llm_age = None
-    llm_sex = None
-    onset_days = None
-    severity = None
+    review = result.get("review") or {}
+    alert = triage.critical_alert(result["evidences"])
+    if alert is None and review.get("emergency"):
+        alert = {
+            "level": "red" if review.get("emergency_verified") else "yellow",
+            "message": "⚠️ Ваше описание похоже на неотложное состояние. "
+                       "Если вам становится хуже — немедленно вызовите скорую помощь (103).",
+        }
 
-    groq_key = os.environ.get("GROQ_API_KEY", "")
-    if groq_key:
-        try:
-            async with _httpx.AsyncClient(timeout=30) as client:
-                resp = await client.post(
-                    "https://api.groq.com/openai/v1/chat/completions",
-                    headers={"Authorization": f"Bearer {groq_key}", "Content-Type": "application/json"},
-                    json={
-                        "model": "llama-3.3-70b-versatile",
-                        "messages": [
-                            {"role": "system", "content": _LLM_EXTRACTION_PROMPT},
-                            {"role": "user", "content": f'Patient complaint (language: auto-detect Russian/Kazakh/English):\n\n"{body.text}"\n\nExtract all diagnostic evidence. Return JSON only.'},
-                        ],
-                        "temperature": 0.0,
-                        "max_tokens": 800,
-                    },
-                )
-            if resp.status_code == 200:
-                raw = resp.json()["choices"][0]["message"]["content"].strip()
-                if raw.startswith("```"):
-                    raw = raw.split("```")[1]
-                    if raw.startswith("json"):
-                        raw = raw[4:]
-                    raw = raw.strip()
-                layer1 = json.loads(raw)
-                llm_confirmed = layer1.get("evidences", [])
-                llm_negated = set(layer1.get("negated", []))
-                llm_uncertain = layer1.get("uncertain", [])
-                llm_age = layer1.get("age")
-                llm_sex = layer1.get("sex")
-                onset_days = layer1.get("onset_days")
-                severity = layer1.get("severity")
-                logger.info(
-                    "Layer1 LLM: %d confirmed, %d negated, %d uncertain, age=%s sex=%s",
-                    len(llm_confirmed), len(llm_negated), len(llm_uncertain),
-                    llm_age, llm_sex,
-                )
-            else:
-                logger.error("Layer1 LLM HTTP %d: %s", resp.status_code, resp.text[:200])
-        except Exception as e:
-            logger.error("Layer1 LLM failed: %s", e)
-    else:
-        logger.warning("GROQ_API_KEY not set — Layer 1 skipped")
-
-    # ── Layer 2a: Vocab regex (always runs, high precision) ──────────
-    vocab_evs = vocab_extract(body.text)
-    regex_age, regex_sex = extract_age_sex(body.text)
-    logger.info("Layer2 Vocab: %d evidences: %s", len(vocab_evs), vocab_evs)
-
-    # ── Layer 2b: BM25 (always runs, catches terms LLM normalized) ───
-    bm25_evs: List[str] = []
-    try:
-        retriever = get_retriever()
-        bm25_candidates = retriever.retrieve(body.text, top_k=20)
-        for ev_id, score in bm25_candidates:
-            if score < 6.0:
-                break
-            meta = retriever._meta.get(ev_id, {})
-            if meta.get("data_type") == "B" and not meta.get("is_antecedent", False):
-                bm25_evs.append(ev_id)
-            if len(bm25_evs) >= 8:
-                break
-        logger.info(
-            "Layer2 BM25: %d evidences (top-5 scores: %s)",
-            len(bm25_evs),
-            [(eid, round(s, 1)) for eid, s in bm25_candidates[:5]],
-        )
-    except Exception as e:
-        logger.warning("Layer2 BM25 failed: %s", e)
-
-    # ── Smart Merge: union of all layers, filtered by negation ───────
-    merged: set = set()
-    layers: Dict[str, List[str]] = {"llm": [], "vocab": [], "bm25": []}
-
-    # LLM confirmed (highest trust — understands context & implicit)
-    for ev in llm_confirmed:
-        merged.add(ev)
-        layers["llm"].append(ev)
-
-    # Vocab regex (high precision, negation already handled internally)
-    for ev in vocab_evs:
-        if ev not in llm_negated:
-            if ev not in merged:
-                layers["vocab"].append(ev)
-            merged.add(ev)
-
-    # BM25 (moderate precision, catches normalized terms, filter by negation)
-    for ev in bm25_evs:
-        if ev not in llm_negated and ev not in merged:
-            merged.add(ev)
-            layers["bm25"].append(ev)
-
-    # Promote uncertain symptoms if confirmed by another layer
-    vocab_bm25_set = set(vocab_evs) | set(bm25_evs)
-    for ev in llm_uncertain:
-        if ev in vocab_bm25_set and ev not in merged:
-            merged.add(ev)
-            layers["llm"].append(ev)
-
-    # Demographics: prefer LLM, fallback to regex
-    age = llm_age or regex_age or 25
-    sex = llm_sex or regex_sex or "M"
-    if not isinstance(age, int) or not (0 <= age <= 120):
-        age = 25
-    if sex not in ("M", "F"):
-        sex = "M"
-
-    valid_evidences, invalid = validate_evidences(list(merged))
-    if invalid:
-        logger.warning("extract_symptoms: filtered %d invalid tokens: %s", len(invalid), invalid)
-
-    logger.info(
-        "3-layer merge: %d total (llm=%d, vocab=%d, bm25=%d) -> %d valid (age=%s sex=%s)",
-        len(merged), len(layers["llm"]), len(layers["vocab"]),
-        len(layers["bm25"]), len(valid_evidences), age, sex,
-    )
     return {
-        "evidences": valid_evidences,
-        "age": age,
-        "sex": sex,
-        "onset_days": onset_days,
-        "severity": severity,
-        "noSymptoms": len(valid_evidences) == 0,
-        "layers": {
-            "llm": len(layers["llm"]),
-            "vocab": len(layers["vocab"]),
-            "bm25": len(layers["bm25"]),
-        },
+        "intake_id": intake_id,
+        "evidences": result["evidences"],
+        "absent": result["absent"],
+        "uncertain": result["uncertain"],
+        "findings": [{**f, "label": extraction.evidence_label(f["code"])} for f in result["findings"]],
+        "age": result["age"],
+        "sex": result["sex"],
+        "noSymptoms": not result["evidences"] and not result["uncertain"],
+        "critical_alert": alert,
+        "mode": result["mode"],
     }
 
 
@@ -1422,67 +1157,43 @@ async def next_questions_endpoint(
     _user: dict = Depends(require_patient),
 ):
     """
-    Two-round follow-up question selection via QAEngine.
-    Round 1 (exploration): JSD across full disease space.
-    Round 2 (discrimination): gap between top-1 and top-2.
-    Falls back to old find_discriminative_evidences if QAEngine unavailable.
+    Up to `n` yes/no follow-up questions, chosen by expected information gain
+    over diseases and triage tiers (qa_engine.py). Two rounds; stops early once
+    the top diagnosis reaches 70%. Pass every "no" back in `absent`.
     """
+    evidences = _clean(body.evidences, "next_questions")
+    absent = [e for e in _clean(body.absent, "next_questions") if e not in set(evidences)]
+    if not evidences:
+        raise HTTPException(status_code=422, detail="No valid evidences")
+
     result = qa_engine.get_questions(
-        evidences=body.evidences,
+        evidences=evidences,
         age=body.age,
         sex=body.sex,
         round_num=body.round_num,
         n_questions=body.n,
+        absent=absent,
     )
-    questions = [
-        {
-            "evidence_id": q.evidence_id,
-            "question_ru": q.question_ru,
-            "question_kk": q.question_kk,
-            "score": q.score,
-            "reason": q.reason,
-        }
-        for q in result.questions
-    ]
-    top3 = result.top3
-
-    # Safety layer: check current evidences for critical symptoms
-    ev_set = set(body.evidences) if body.evidences else set()
-    critical_alert = None
-
-    if "E_112" in ev_set:
-        critical_alert = {
-            "level": "red",
-            "message": "⚠️ СТРИДОР (шумное дыхание на вдохе) — признак обструкции дыхательных путей. "
-                       "Немедленно вызовите скорую помощь (103)!",
-        }
-    elif ev_set & RED_FLAG_EVIDENCES:
-        critical_alert = {
-            "level": "red",
-            "message": "⚠️ Обнаружены опасные симптомы. Рекомендуется срочная консультация врача или скорая помощь.",
-        }
-    else:
-        for combo in RED_FLAG_COMBOS:
-            if combo <= ev_set:
-                critical_alert = {
-                    "level": "red",
-                    "message": "⚠️ Сочетание симптомов указывает на возможное неотложное состояние. "
-                               "Обратитесь к врачу как можно скорее.",
-                }
-                break
-
-    top1_name = top3[0][0] if top3 else ""
-    top1_score = top3[0][1] if top3 else 0.0
-    zone = classify_zone(top1_name, top1_score, evidences=body.evidences)
+    distribution = predict_distribution(evidences, body.age, body.sex, absent)
 
     return {
-        "questions": questions,
+        "questions": [
+            {
+                "evidence_id": q.evidence_id,
+                "question_en": q.question_en,
+                "question_ru": q.question_ru,
+                "question_kk": q.question_kk,
+                "score": q.score,
+                "reason": q.reason,
+            }
+            for q in result.questions
+        ],
         "current_top3": [
             {"disease": name, "label": disease_labels.get(name, name), "score": round(sc, 3)}
-            for name, sc in top3
+            for name, sc in result.top3
         ],
-        "zone": zone,
-        "critical_alert": critical_alert,
+        "zone": triage.assess(distribution, evidences).zone,
+        "critical_alert": triage.critical_alert(evidences),
         "should_stop": result.should_stop,
         "stop_reason": result.stop_reason,
         "confidence": round(result.confidence, 4),
@@ -1490,23 +1201,97 @@ async def next_questions_endpoint(
     }
 
 
-@app.post("/save_explanation")
-async def save_explanation_endpoint(body: SaveExplanationRequest, user: dict = Depends(require_patient)):
-    patient_id = user.get("patient_id")
-    if not day_belongs_to_patient(body.day_id, patient_id):
+_LANG_NAMES = {"ru": "Russian", "en": "English", "kk": "Kazakh"}
+
+_FALLBACK_EXPLANATION = {
+    "ru": ("Анализ симптомов завершён. Это предварительная оценка — обратитесь к врачу.",
+           "Автоматическое обоснование недоступно."),
+    "en": ("Symptom analysis complete. This is a preliminary assessment — please see a doctor.",
+           "Automatic clinical reasoning is unavailable."),
+    "kk": ("Симптомдар талдауы аяқталды. Бұл алдын ала баға — дәрігерге жүгініңіз.",
+           "Автоматты клиникалық негіздеме қол жетімсіз."),
+}
+
+_PATIENT_EXPLAIN_PROMPT = """\
+You explain a preliminary triage result to a PATIENT. Write 2-4 short sentences in {lang}, plain words, calm tone.
+- Say which of the patient's symptoms point to the result. Use ONLY symptoms listed under "Reported" or "Denied"; never add others.
+- Say it is a preliminary assessment and a doctor must confirm it. If the zone is red, tell them to seek urgent care now.
+- No drug names or doses. No JSON, no markdown. Entirely in {lang}."""
+
+_DOCTOR_EXPLAIN_PROMPT = """\
+You are a clinical decision-support assistant writing for a DOCTOR, in {lang}. Use markdown with these sections:
+**Clinical reasoning** · **Differential** · **Key findings and red flags** · **Suggested work-up** · **Watch for**
+Rules:
+- Base the reasoning on the facts given. "Influence" values are measured effects inside the model (how much each answer moved each diagnosis), not clinical likelihood ratios; you may cite them as such.
+- Mention only the reported and denied findings listed; do not invent symptoms, vitals or history.
+- If the case may be outside the model's 49 conditions, say so first.
+- End with one line stating this is decision support, not a diagnosis. 8-15 sentences total."""
+
+
+def _explanation_facts(day: Dict[str, Any]) -> str:
+    analysis = day["analysis"]
+    top3 = analysis.get("top3") or []
+    attributions = explain_prediction(
+        day["evidences"], analysis.get("age"), analysis.get("sex"), day["absent"],
+        diseases=[name for name, _ in top3],
+    )
+
+    def label(token: str) -> str:
+        if token.startswith("NOT "):
+            return "denies: " + extraction.evidence_label(token[4:])["en"]
+        return extraction.evidence_label(token)["en"]
+
+    lines = []
+    if day["text"]:
+        lines.append(f'Patient\'s own words: "{day["text"]}"')
+    lines.append("Reported: " + ("; ".join(label(e) for e in day["evidences"]) or "—"))
+    lines.append("Denied: " + ("; ".join(label(e) for e in day["absent"]) or "—"))
+    lines.append("Model differential (probability, then the answers that moved it most):")
+    for name, p in top3:
+        influence = ", ".join(f"{label(ev)} {'+' if d >= 0 else '−'}{abs(d):.0%}" for ev, d in attributions.get(name, []))
+        lines.append(f"- {name}: {p:.0%}. Influence: {influence or '—'}")
+    reasons = ", ".join(r["code"] + (f" {r['evidence']}" if "evidence" in r else "") for r in analysis.get("reasons", []))
+    lines.append(f"Triage zone: {day['zone']}" + (f" (because: {reasons})" if reasons else ""))
+    if analysis.get("out_of_scope"):
+        lines.append("Safety reviewer: the complaint may be outside the model's 49 conditions"
+                     + (f"; most likely {analysis.get('likely_condition')}" if analysis.get("likely_condition") else ""))
+    return "\n".join(lines)
+
+
+@app.post("/explain")
+@limiter.limit("20/minute")
+async def explain_endpoint(request: Request, body: ExplainRequest, user: dict = Depends(require_patient)):
+    """
+    Patient and doctor explanations for one diary day, generated on the server
+    and saved with it. The LLM verbalises measured facts (leave-one-out effects
+    of each answer on the model) instead of inventing symptom weights.
+    Replaces /save_explanation, which stored whatever text the client sent —
+    letting a patient write the "AI clinical analysis" their doctor reads.
+    """
+    patient_id = user["patient_id"]
+    day = get_day_for_explanation(body.day_id, patient_id)
+    if day is None:
         raise HTTPException(status_code=403, detail="Access denied")
-    conn = connect()
-    try:
-        cur = conn.cursor()
-        cur.execute("""
-            UPDATE diary_days
-            SET patient_explanation = %s, doctor_explanation = %s
-            WHERE day_id = %s
-        """, (encrypt_field(body.patient_explanation), encrypt_field(body.doctor_explanation), body.day_id))
-        conn.commit()
-        return {"ok": cur.rowcount > 0}
-    finally:
-        conn.close()
+
+    lang = _LANG_NAMES[body.lang]
+    facts = _explanation_facts(day)
+    patient_result, doctor_result = await asyncio.gather(
+        llm.chat_text(
+            [{"role": "system", "content": _PATIENT_EXPLAIN_PROMPT.format(lang=lang)},
+             {"role": "user", "content": facts}],
+            name="explain_patient", reasoning="low", max_tokens=1500,
+        ),
+        llm.chat_text(
+            [{"role": "system", "content": _DOCTOR_EXPLAIN_PROMPT.format(lang=lang)},
+             {"role": "user", "content": facts}],
+            name="explain_doctor", reasoning="medium", max_tokens=4000,
+        ),
+    )
+    fallback_patient, fallback_doctor = _FALLBACK_EXPLANATION[body.lang]
+    patient_text = patient_result.data if patient_result else fallback_patient
+    doctor_text = doctor_result.data if doctor_result else fallback_doctor
+    save_explanations(body.day_id, patient_id, patient_text, doctor_text)
+    return {"patientExplanation": patient_text, "doctorExplanation": doctor_text}
 
 # ─── Doctor-only endpoints ───
 
@@ -1555,7 +1340,8 @@ async def get_day_symptoms_endpoint(body: DaySymptomsRequest, user: dict = Depen
         symptoms = {r[0]: r[1] for r in rows}
     finally:
         conn.close()
-    return {"symptoms": symptoms}
+    # value: 1 reported, 0 denied. labels: {en, ru, kk} per evidence token.
+    return {"symptoms": symptoms, "labels": {code: extraction.evidence_label(code) for code in symptoms}}
 
 # ─── Lab Results endpoints ───
 
@@ -1583,13 +1369,8 @@ async def upload_lab_result_endpoint(
 
     safe_filename = f"{uuid.uuid4().hex}.jpg"
 
-    groq_key = os.environ.get("GROQ_API_KEY", "")
-    if not groq_key:
+    if not llm.available():
         raise HTTPException(status_code=500, detail="GROQ_API_KEY not configured on server")
-
-    import httpx
-
-    vision_model = os.environ.get("GROQ_VISION_MODEL", "llama-4-scout-17b-16e-instruct")
 
     system_prompt = (
         "Ты медицинский OCR-ассистент. Извлеки данные из фотографии медицинского анализа.\n"
@@ -1605,53 +1386,33 @@ async def upload_lab_result_endpoint(
         "}\n"
     )
 
-    try:
-        async with httpx.AsyncClient(timeout=60) as client:
-            resp = await client.post(
-                "https://api.groq.com/openai/v1/chat/completions",
-                headers={"Authorization": f"Bearer {groq_key}", "Content-Type": "application/json"},
-                json={
-                    "model": vision_model,
-                    "messages":[
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content":[
-                            {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{image_b64}"}},
-                            {"type": "text", "text": "Извлеки все данные из этого анализа."},
-                        ]},
-                    ],
-                    "temperature": 0,
-                    "max_tokens": 4096,
-                },
-            )
-            resp.raise_for_status()
-    except httpx.HTTPStatusError as e:
-        logger.error("Groq Vision API error: %s %s", e.response.status_code, e.response.text)
-        raise HTTPException(status_code=502, detail="AI service error")
-    except Exception as e:
-        logger.error("Groq Vision request failed: %s", e)
+    # Groq documents JSON mode, not strict schemas, for image input (strict=False);
+    # reasoning off — this is transcription, not judgement.
+    result = await llm.chat_json(
+        [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": [
+                {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{image_b64}"}},
+                {"type": "text", "text": "Извлеки все данные из этого анализа."},
+            ]},
+        ],
+        {}, name="lab_ocr", models=llm.VISION_MODELS, strict=False, reasoning="none",
+        temperature=0.2, max_tokens=4096, timeout=60,
+    )
+    if result is None:
         raise HTTPException(status_code=502, detail="AI service unavailable")
-
-    data = resp.json()
-    content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
-
-    if content.startswith("```"):
-        content = content.split("\n", 1)[-1]
-        if content.endswith("```"):
-            content = content[:-3]
-        content = content.strip()
-
-    try:
-        parsed = json.loads(content)
-    except json.JSONDecodeError:
-        raise HTTPException(status_code=502, detail="AI returned invalid JSON")
+    parsed = result.data if isinstance(result.data, dict) else {}
 
     if "error" in parsed:
-        raise HTTPException(status_code=422, detail=parsed["error"])
+        raise HTTPException(status_code=422, detail=str(parsed["error"]))
 
-    test_type = parsed.get("test_type", "Неизвестный анализ")
-    test_date = parsed.get("test_date", "")
-    interpretation = parsed.get("interpretation", "")
-    results = parsed.get("results",[])
+    test_type = str(parsed.get("test_type") or "Неизвестный анализ")
+    test_date = str(parsed.get("test_date") or "")
+    interpretation = str(parsed.get("interpretation") or "")
+    results = [
+        {key: str(item.get(key) or "") for key in ("name", "value", "unit", "reference_range", "status")}
+        for item in (parsed.get("results") or []) if isinstance(item, dict)
+    ]
 
     conn = connect()
     try:

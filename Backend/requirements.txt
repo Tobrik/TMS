@@ -9,8 +9,9 @@ python-multipart==0.0.12
 cryptography
 psycopg2-binary==2.9.10
 Pillow>=10.0.0
-scikit-learn>=1.3.0
+# model.pkl was pickled with scikit-learn 1.8.0 / NumPy 2 — other versions may not load it
+scikit-learn==1.8.0
 joblib>=1.3.0
-numpy>=1.24.0
+numpy>=2.0
 scipy>=1.10.0
 rank-bm25>=0.2.2

@@ -1,2 +1,15 @@
 release_train_patients
 release_validate_patients
+
+# Python
+__pycache__/
+*.pyc
+.env
+
+# Frontend
+node_modules/
+.next/
+*.tsbuildinfo
+
+# Eval caches (may contain API output)
+Backend/eval/results/

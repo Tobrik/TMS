@@ -1,8 +1,9 @@
 """
 Tests for the two-round QAEngine.
 
-These tests validate that the new exploration-first strategy avoids the
-confirmation-bias problem of the old find_discriminative_evidences approach.
+`engine` is the legacy "jsd" strategy (exploration-first, which avoided the
+confirmation bias of the old find_discriminative_evidences); `eig_engine` is the
+default expected-information-gain strategy.
 
 Run:  python -m pytest test_qa_engine.py -v
 """
@@ -14,7 +15,7 @@ import pytest
 # Ensure the Backend directory is on the path so imports resolve
 sys.path.insert(0, os.path.dirname(__file__))
 
-from qa_engine import QAEngine, QAResult, STOP_CONFIDENCE
+from qa_engine import QAResult, STOP_CONFIDENCE, MAX_ROUNDS
 
 
 # ─── Fixtures ────────────────────────────────────────────────────────────────
@@ -33,16 +34,13 @@ def engine():
     if ml_model._clf is None:
         pytest.skip("RF model not loaded")
 
-    return QAEngine(
-        clf=ml_model._clf,
-        feature_names=ml_model.FEATURE_NAMES,
-        label_classes=ml_model.LABEL_CLASSES,
-        evidences_meta=ml_model.EVIDENCES_META,
-        disease_relevant_evidences=ml_model._DISEASE_RELEVANT_EVIDENCES,
-        question_translations=ml_model._QUESTION_TRANSLATIONS,
-        evidence_prerequisites=ml_model._EVIDENCE_PREREQUISITES,
-        never_ask=ml_model._NEVER_ASK,
-    )
+    return ml_model.make_qa_engine("jsd", posterior="rf")
+
+
+@pytest.fixture(scope="module")
+def eig_engine():
+    import ml_model
+    return ml_model.make_qa_engine("eig")
 
 
 # Headache + nausea input — typical neurological presentation
@@ -215,3 +213,66 @@ def test_max_rounds_stops(engine):
     assert result.should_stop is True
     assert result.stop_reason == "max_rounds"
     assert result.questions == []
+
+
+# ─── Expected information gain (default strategy) ───────────────────────────
+
+FLU_LIKE = ["E_91", "E_201", "E_181"]  # fever, cough, runny nose
+
+
+def test_eig_returns_translated_questions(eig_engine):
+    result = eig_engine.get_questions(FLU_LIKE, round_num=1, n_questions=3)
+    assert result.round_type == "eig"
+    assert len(result.questions) == 3
+    for q in result.questions:
+        assert q.question_en and q.question_ru and q.question_kk
+        assert q.evidence_id not in FLU_LIKE
+
+
+def test_eig_never_reasks_a_denied_question(eig_engine):
+    first = eig_engine.get_questions(FLU_LIKE, round_num=1, n_questions=3)
+    denied = [q.evidence_id for q in first.questions]
+    second = eig_engine.get_questions(FLU_LIKE, round_num=2, n_questions=3, absent=denied)
+    assert not {q.evidence_id for q in second.questions} & set(denied)
+
+
+def test_no_answers_change_the_differential():
+    """v1 dropped "no" answers; now a denial is evidence too."""
+    import ml_model
+    before = ml_model.predict_distribution(FLU_LIKE)
+    after = ml_model.predict_distribution(FLU_LIKE, absent=["E_94", "E_144", "E_77"])
+    assert before != after
+
+
+def test_eig_scores_are_nonnegative_and_sorted(eig_engine):
+    import ml_model
+    posterior = ml_model.class_posterior(FLU_LIKE)
+    candidates = eig_engine._base_candidates(set(FLU_LIKE))
+    scores = [s for _, s in eig_engine._score_eig(candidates, posterior)]
+    assert scores == sorted(scores, reverse=True)
+    assert min(scores) >= -1e-9
+
+
+def test_eig_asks_translated_antecedents_only(eig_engine):
+    import ml_model
+    candidates = eig_engine._base_candidates(set())
+    antecedents = [c for c in candidates if ml_model.EVIDENCES_META[c].get("is_antecedent")]
+    assert antecedents, "risk-factor questions should be askable"
+    assert all(c in ml_model._QUESTION_TRANSLATIONS for c in antecedents)
+
+
+def test_eig_stops_when_confident(eig_engine):
+    import ml_model
+    # GERD's six most frequent yes/no evidences in the DDXPlus validation split
+    stats = ml_model.EVIDENCE_STATS["p_evidence_given_disease"]["GERD"]
+    typical = [e for e, _ in sorted(stats.items(), key=lambda x: -x[1])
+               if ml_model.EVIDENCES_META.get(e, {}).get("data_type") == "B"][:6]
+    result = eig_engine.get_questions(typical)
+    assert result.should_stop and result.stop_reason == "high_confidence"
+    assert result.top3[0][0] == "GERD"
+    assert result.confidence >= STOP_CONFIDENCE
+
+
+def test_eig_max_rounds(eig_engine):
+    result = eig_engine.get_questions(FLU_LIKE, round_num=MAX_ROUNDS + 1)
+    assert result.should_stop and result.stop_reason == "max_rounds"
