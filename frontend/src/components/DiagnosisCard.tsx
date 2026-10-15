@@ -8,16 +8,39 @@ import {
   ChevronRight,
   Brain,
   FlaskConical,
+  Loader2,
+  ShieldAlert,
 } from "lucide-react";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { PieChart } from "@/components/PieChart";
-import type { DiagnosisResult } from "@/lib/types";
-import { t, getLang, type Lang } from "@/lib/i18n";
+import type { DiagnosisResult, TriageReason } from "@/lib/types";
+import { t, getLang, type Lang, type TranslationKey } from "@/lib/i18n";
 
 interface DiagnosisCardProps {
   diagnosis: DiagnosisResult;
   lang?: Lang;
+}
+
+const REASON_KEYS: Record<TriageReason["code"], TranslationKey> = {
+  red_flag: "reasonRedFlag",
+  red_flag_combo: "reasonRedFlagCombo",
+  llm_emergency: "reasonLlmEmergency",
+  out_of_scope: "reasonOutOfScope",
+  red_mass: "reasonRedMass",
+  yellow_flag: "reasonYellowFlag",
+  yellow_mass: "reasonYellowMass",
+};
+
+/** Distinct reasons behind the final zone, e.g. "probability of a dangerous condition: 22%". */
+function urgencyReasons(diagnosis: DiagnosisResult, l: Lang): string[] {
+  const texts = (diagnosis.reasons ?? [])
+    .filter((r) => r.zone === diagnosis.zone)
+    .map((r) => {
+      const text = t(REASON_KEYS[r.code], l);
+      return r.value !== undefined ? `${text}: ${Math.round(r.value * 100)}%` : text;
+    });
+  return Array.from(new Set(texts)).slice(0, 3);
 }
 
 function zoneToUrgency(zone?: "red" | "yellow" | "green"): "low" | "medium" | "high" {
@@ -49,6 +72,7 @@ export function DiagnosisCard({ diagnosis, lang }: DiagnosisCardProps) {
   };
 
   const config = urgencyConfig[urgency];
+  const reasons = urgencyReasons(diagnosis, l);
 
   return (
     <Card
@@ -74,6 +98,22 @@ export function DiagnosisCard({ diagnosis, lang }: DiagnosisCardProps) {
 
       {/* Body */}
       <div className="p-4 space-y-4">
+        {/* Outside the 49 conditions the model knows: say so before the label */}
+        {diagnosis.outOfScope && (
+          <div className="flex items-start gap-3 bg-amber-50 rounded-xl p-3 border border-amber-200">
+            <ShieldAlert className="h-5 w-5 text-amber-600 mt-0.5 shrink-0" />
+            <div>
+              <p className="text-sm font-semibold text-amber-800">{t("outOfScopeTitle", l)}</p>
+              <p className="text-xs text-amber-700 leading-relaxed">
+                {diagnosis.outOfScope.likely_condition && (
+                  <>{t("possibly", l)}: {diagnosis.outOfScope.likely_condition}. </>
+                )}
+                {t("outOfScopeBody", l)}
+              </p>
+            </div>
+          </div>
+        )}
+
         {/* Disease name */}
         <div>
           <h3 className="text-lg font-bold text-gray-900">
@@ -137,7 +177,20 @@ export function DiagnosisCard({ diagnosis, lang }: DiagnosisCardProps) {
           <ChevronRight className="h-4 w-4 text-gray-400 ml-auto mt-0.5" />
         </div>
 
+        {/* Why this urgency */}
+        {reasons.length > 0 && urgency !== "low" && (
+          <p className="text-xs text-gray-500">
+            <span className="font-medium">{t("urgencyWhy", l)}:</span> {reasons.join(" · ")}
+          </p>
+        )}
+
         {/* AI Explanation for patient */}
+        {diagnosis.explanationPending && !diagnosis.patientExplanation && (
+          <div className="flex items-center gap-2 text-xs text-blue-500 px-1">
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            {t("explanationPending", l)}
+          </div>
+        )}
         {diagnosis.patientExplanation && (
           <div className="flex items-start gap-3 bg-blue-50/80 rounded-xl p-3 border border-blue-100">
             <Brain className="h-5 w-5 text-blue-600 mt-0.5 shrink-0" />

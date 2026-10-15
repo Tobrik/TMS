@@ -66,6 +66,17 @@ export interface AnalysSlice {
   score: number;
 }
 
+export type Zone = "red" | "yellow" | "green";
+
+export interface TriageReason {
+  zone: Zone;
+  code: "red_flag" | "red_flag_combo" | "llm_emergency" | "out_of_scope" | "red_mass" | "yellow_flag" | "yellow_mass";
+  evidence?: string;
+  evidences?: string[];
+  value?: number;
+  verified?: boolean;
+}
+
 export interface AnalysResponse {
   day: number;
   diseaseName: string;
@@ -74,7 +85,9 @@ export interface AnalysResponse {
   recommendation: string;
   slices: AnalysSlice[];
   score: number;
-  zone: "red" | "yellow" | "green";
+  zone: Zone;
+  reasons: TriageReason[];
+  out_of_scope: { likely_condition: string | null } | null;
 }
 
 export interface HistoryEntry {
@@ -88,6 +101,7 @@ export interface HistoryEntry {
   doctor_name: string | null;
   patient_explanation: string | null;
   doctor_explanation: string | null;
+  zone: Zone | null;
 }
 
 export interface Doctor {
@@ -140,46 +154,71 @@ export async function loginPatient(
   return data;
 }
 
+export type LocalizedText = { en: string; ru: string; kk: string };
+
+export interface CriticalAlert {
+  level: "red" | "yellow";
+  message: string;
+}
+
+export interface Finding {
+  code: string;
+  status: "present" | "absent" | "uncertain";
+  quote: string; // the patient's own words (Groq); empty for Clef and regex
+  votes: number;
+  source: "llm" | "safety_net" | "regex" | "bm25" | "clef";
+  confidence: number | null; // Clef: probability of this status
+  label: LocalizedText;
+}
+
 export interface ExtractSymptomsResponse {
+  intake_id: number | null;
   evidences: string[];
-  age: number;
-  sex: string;
+  absent: string[];
+  uncertain: string[];
+  findings: Finding[];
+  age: number | null; // null = not stated
+  sex: "M" | "F" | null;
   noSymptoms?: boolean;
+  critical_alert: CriticalAlert | null;
+  mode?: "llm" | "fallback" | "clef";
   error?: string;
 }
 
 export async function extractSymptoms(text: string): Promise<ExtractSymptomsResponse> {
   try {
-    const { data } = await api.post<{ evidences: string[]; age: number; sex: string }>(
-      "/extract_symptoms",
-      { text }
-    );
-    if (!data.evidences || data.evidences.length === 0) {
-      return { evidences: [], age: 25, sex: "M", noSymptoms: true };
-    }
-    return { evidences: data.evidences, age: data.age ?? 25, sex: data.sex ?? "M" };
+    const { data } = await api.post<ExtractSymptomsResponse>("/extract_symptoms", { text });
+    return data;
   } catch (err: unknown) {
     const status = (err as { response?: { status?: number } })?.response?.status;
     return {
+      intake_id: null,
       evidences: [],
-      age: 25,
-      sex: "M",
+      absent: [],
+      uncertain: [],
+      findings: [],
+      age: null,
+      sex: null,
+      critical_alert: null,
       error: status ? `AI Service Error: ${status}` : "Network error",
     };
   }
 }
 
 export async function sendAnalysis(
-  _patientId: number,
   evidences: string[],
-  age: number,
-  sex: string,
-  diagnoseSetup: string
+  absent: string[],
+  age: number | null,
+  sex: string | null,
+  intakeId: number | null,
+  diagnoseSetup: string = "Nothing"
 ): Promise<AnalysResponse> {
   const { data } = await api.post<AnalysResponse>("/analys", {
     evidences,
+    absent,
     age,
     sex,
+    intake_id: intakeId,
     diagnose_setup: diagnoseSetup,
   });
   return data;
@@ -196,20 +235,41 @@ export interface ClarifyingQuestion {
 export interface NextQuestionsResponse {
   questions: ClarifyingQuestion[];
   current_top3: { disease: string; label: string; score: number }[];
+  zone: Zone;
+  critical_alert: CriticalAlert | null;
+  should_stop: boolean;
+  stop_reason: string;
+  confidence: number;
+  round_type: string;
 }
 
 export async function getNextQuestions(
   evidences: string[],
-  age: number,
-  sex: string,
+  absent: string[],
+  age: number | null,
+  sex: string | null,
+  roundNum: number,
   n: number = 3
 ): Promise<NextQuestionsResponse> {
   const { data } = await api.post<NextQuestionsResponse>("/next_questions", {
     evidences,
+    absent,
     age,
     sex,
+    round_num: roundNum,
     n,
   });
+  return data;
+}
+
+export async function explainDiagnosis(
+  dayId: number,
+  lang: "ru" | "en" | "kk"
+): Promise<{ patientExplanation: string; doctorExplanation: string }> {
+  const { data } = await api.post<{ patientExplanation: string; doctorExplanation: string }>(
+    "/explain",
+    { day_id: dayId, lang }
+  );
   return data;
 }
 
@@ -260,7 +320,7 @@ export interface TriagePatient {
   last_disease: string;
   last_score: number;
   diag_date: string | null;
-  zone: "red" | "yellow" | "green";
+  zone: Zone;
 }
 
 export async function listPatientsTriage(): Promise<{ patients: TriagePatient[] }> {
@@ -278,26 +338,13 @@ export async function getPatientInfo(
   return data;
 }
 
-export async function getDaySymptoms(
-  dayId: number
-): Promise<{ symptoms: Record<string, number> }> {
-  const { data } = await api.post<{ symptoms: Record<string, number> }>(
-    "/get_day_symptoms",
-    { day_id: dayId }
-  );
-  return data;
+export interface DaySymptoms {
+  symptoms: Record<string, number>; // 1 reported, 0 denied
+  labels?: Record<string, LocalizedText>;
 }
 
-export async function saveExplanation(
-  dayId: number,
-  patientExplanation: string,
-  doctorExplanation: string
-): Promise<{ ok: boolean }> {
-  const { data } = await api.post<{ ok: boolean }>("/save_explanation", {
-    day_id: dayId,
-    patient_explanation: patientExplanation,
-    doctor_explanation: doctorExplanation,
-  });
+export async function getDaySymptoms(dayId: number): Promise<DaySymptoms> {
+  const { data } = await api.post<DaySymptoms>("/get_day_symptoms", { day_id: dayId });
   return data;
 }
 

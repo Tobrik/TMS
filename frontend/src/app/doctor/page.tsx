@@ -15,7 +15,7 @@ import { Textarea } from "@/components/ui/textarea";
 import {
   loginDoctor, listDoctors, getHistory, getPatientInfo, getDaySymptoms,
   updateByDoctor, listPatientsTriage, logout as apiLogout,
-  type Doctor, type HistoryEntry, type PatientInfo, type TriagePatient,
+  type Doctor, type HistoryEntry, type PatientInfo, type TriagePatient, type DaySymptoms,
 } from "@/lib/api";
 import { getDiseaseLabel } from "@/lib/diseaseWeights";
 import { SymptomTrend } from "@/components/SymptomTrend";
@@ -71,7 +71,7 @@ export default function DoctorPage() {
   const [saving, setSaving] = useState(false);
 
   const [expandedDayId, setExpandedDayId] = useState<number | null>(null);
-  const [daySymptoms, setDaySymptoms] = useState<Record<number, Record<string, number>>>({});
+  const [daySymptoms, setDaySymptoms] = useState<Record<number, DaySymptoms>>({});
   const [symptomsLoading, setSymptomsLoading] = useState<number | null>(null);
 
   const [triagePatients, setTriagePatients] = useState<TriagePatient[]>([]);
@@ -164,7 +164,7 @@ export default function DoctorPage() {
       setSymptomsLoading(dayId);
       try {
         const resp = await getDaySymptoms(dayId);
-        setDaySymptoms((prev) => ({ ...prev, [dayId]: resp.symptoms }));
+        setDaySymptoms((prev) => ({ ...prev, [dayId]: resp }));
       } catch { /* ignore */ }
       finally { setSymptomsLoading(null); }
     }
@@ -190,21 +190,19 @@ export default function DoctorPage() {
     finally { setSaving(false); }
   };
 
-  function getActiveSymptoms(dayId: number): { code: string; label: string; value: number }[] {
-    const syms = daySymptoms[dayId];
-    if (!syms) return [];
-    const result: { code: string; label: string; value: number }[] = [];
-    for (const [code, value] of Object.entries(syms)) {
-      if (value > 0) result.push({ code, label: getSymptomLabel(code as SymptomCode, lang), value });
-    }
-    return result.sort((a, b) => b.value - a.value);
+  // value 1 = reported, 0 = denied (v2). Labels come from the backend; v1 rows
+  // used the old pediatric symptom codes, which getSymptomLabel still covers.
+  function getDaySymptomList(dayId: number): { code: string; label: string; denied: boolean }[] {
+    const day = daySymptoms[dayId];
+    if (!day) return [];
+    return Object.entries(day.symptoms)
+      .map(([code, value]) => ({
+        code,
+        label: day.labels?.[code]?.[lang] ?? getSymptomLabel(code as SymptomCode, lang),
+        denied: value === 0,
+      }))
+      .sort((a, b) => Number(a.denied) - Number(b.denied));
   }
-
-  const severityColor = (v: number) => {
-    if (v >= 3) return "bg-red-100 text-red-700 border-red-200";
-    if (v >= 2) return "bg-orange-100 text-orange-700 border-orange-200";
-    return "bg-yellow-100 text-yellow-700 border-yellow-200";
-  };
 
   // Triage zone renderer
   const renderTriageZone = (
@@ -232,7 +230,7 @@ export default function DoctorPage() {
                     <p className="text-xs text-gray-500">{makeCode(p.patient_id)} {p.city && `· ${p.city}`}</p>
                     {p.last_disease && (
                       <p className={`text-sm mt-1 ${colorClasses.text}`}>
-                        {getDiseaseLabel(p.last_disease.split(" ")[0], lang)}
+                        {getDiseaseLabel(p.last_disease, lang)}
                         {p.last_score > 0 && ` · ${Math.round(p.last_score * 100)}%`}
                       </p>
                     )}
@@ -415,7 +413,7 @@ export default function DoctorPage() {
                 const isExpanded = expandedDayId === entry.day_id;
                 const isEditing = editingDayId === entry.day_id;
                 const diseaseLabel = getDiseaseLabel(entry.disease_predict, lang);
-                const activeSymptoms = getActiveSymptoms(entry.day_id);
+                const daySymptomList = getDaySymptomList(entry.day_id);
                 const isLoadingSymptoms = symptomsLoading === entry.day_id;
 
                 return (
@@ -455,11 +453,12 @@ export default function DoctorPage() {
                               <Loader2 className="h-4 w-4 animate-spin text-gray-400" />
                               <span className="text-xs text-gray-400">{t("loadingDots", lang)}</span>
                             </div>
-                          ) : activeSymptoms.length > 0 ? (
+                          ) : daySymptomList.length > 0 ? (
                             <div className="flex flex-wrap gap-2">
-                              {activeSymptoms.map((s) => (
-                                <span key={s.code} className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-medium border ${severityColor(s.value)}`}>
-                                  {s.label}<span className="opacity-70">({s.value}/3)</span>
+                              {daySymptomList.map((s) => (
+                                <span key={s.code} title={s.code} className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-medium border ${
+                                  s.denied ? "bg-gray-50 text-gray-400 border-gray-200" : "bg-yellow-100 text-yellow-800 border-yellow-200"}`}>
+                                  {s.denied && <span className="uppercase">{t("denied", lang)}:</span>}{s.label}
                                 </span>
                               ))}
                             </div>

@@ -27,6 +27,12 @@ export interface DiagnosisResult {
   slices: DiseaseSlice[];
   patientExplanation?: string;
   doctorExplanation?: string;
+  explanationPending?: boolean;
   labInfluences?: LabInfluence[];
   zone?: "red" | "yellow" | "green";
+  reasons?: TriageReason[];
+  outOfScope?: { likely_condition: string | null } | null;
 }
+
+export type { TriageReason } from "./api";
+import type { TriageReason } from "./api";
