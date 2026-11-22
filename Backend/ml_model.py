@@ -80,16 +80,34 @@ except Exception as e:
 _LIKELIHOOD_FLOOR = 0.03
 
 
-def _build_likelihood_matrix(floor: float = _LIKELIHOOD_FLOOR) -> np.ndarray:
+# History answers (is_antecedent: exposures, lifestyle, past diagnoses) get a
+# softer floor. DDXPlus generates them all-or-nothing per disease, e.g. "contact
+# with someone with similar symptoms" is 0.66 for URTI but 0.03 for influenza,
+# so with the symptom floor one "yes" moved the odds ~20x. With 0.20 a history
+# answer can still shift a diagnosis (~4x) but no longer decide it alone.
+HISTORY_FLOOR = 0.20
+
+
+def _is_history(token: str) -> bool:
+    return bool(EVIDENCES_META.get(token.split("_@_")[0], {}).get("is_antecedent"))
+
+
+def _build_likelihood_matrix(floor: float = _LIKELIHOOD_FLOOR, history_floor: Optional[float] = None) -> np.ndarray:
     """(n_classes, N_FEATURES) matrix of P(feature token | disease), clipped to
-    [floor, 1 - floor]. The floor is the smoothing that keeps one wrong symptom
-    from zeroing out the right disease."""
+    [floor, 1 - floor] ([HISTORY_FLOOR, 1 - HISTORY_FLOOR] for history answers).
+    The floor is the smoothing that keeps one wrong symptom from zeroing out the
+    right disease."""
+    history_floor = HISTORY_FLOOR if history_floor is None else history_floor
     lik = np.full((len(LABEL_CLASSES), N_FEATURES), floor, dtype=np.float64)
+    for token, j in _feat_idx.items():
+        if _is_history(token):
+            lik[:, j] = max(floor, history_floor)
     table = EVIDENCE_STATS.get("p_evidence_given_disease", {})
     for ci, disease in enumerate(LABEL_CLASSES):
         for token, p in table.get(disease, {}).items():
             if token in _feat_idx:
-                lik[ci, _feat_idx[token]] = min(max(p, floor), 1 - floor)
+                f = max(floor, history_floor) if _is_history(token) else floor
+                lik[ci, _feat_idx[token]] = min(max(p, f), 1 - f)
     return lik
 
 
