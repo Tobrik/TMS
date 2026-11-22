@@ -83,6 +83,7 @@ class QAEngine:
         likelihoods: Optional[np.ndarray] = None,
         posterior_fn: Optional[Callable[..., np.ndarray]] = None,
         pool_fn: Optional[Callable[[np.ndarray], Dict[str, float]]] = None,
+        expand_fn: Optional[Callable[[List[str]], List[str]]] = None,
         tier_of: Optional[Callable[[str], str]] = None,
         strategy: str = "eig",
     ) -> None:
@@ -97,6 +98,7 @@ class QAEngine:
         self.likelihoods = likelihoods
         self.posterior_fn = posterior_fn
         self.pool_fn = pool_fn
+        self.expand_fn = expand_fn  # adds implied findings (e.g. pain), so they are never asked
         self.strategy = strategy
         if strategy == "eig" and (likelihoods is None or posterior_fn is None or pool_fn is None):
             raise ValueError("strategy='eig' needs likelihoods, posterior_fn and pool_fn")
@@ -344,6 +346,8 @@ class QAEngine:
         n_questions: int,
         unknown: Iterable[str] = (),
     ) -> QAResult:
+        if self.expand_fn is not None:
+            evidences = self.expand_fn(evidences)
         posterior = self.posterior_fn(evidences, absent, age, sex)
         pooled = self.pool_fn(posterior)
         top3 = list(pooled.items())[:3]

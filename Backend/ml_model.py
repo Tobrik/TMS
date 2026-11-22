@@ -374,6 +374,21 @@ def _apply_clinical_adjustments(
     return p / total if total > 0 else p
 
 
+# Findings that already mean "the patient has pain" (E_53, which DDXPlus gives
+# ~97% of flu and cold patients). Without this the engine asked "do you have
+# pain?" after "ломит всё тело", and a "no" divided influenza's odds by ~30.
+_PAIN_IMPLIED_BY = {"E_144", "E_97", "E_14", "E_220", "E_216", "E_33"}
+_PAIN_PREFIXES = ("E_55_@_", "E_54_@_", "E_59_@_")
+
+
+def expand_implied(evidences: Iterable[str]) -> List[str]:
+    """`evidences` plus what they imply (E_53 pain when a pain finding is present)."""
+    ev = list(dict.fromkeys(evidences))
+    if "E_53" not in ev and any(e in _PAIN_IMPLIED_BY or e.startswith(_PAIN_PREFIXES) for e in ev):
+        ev.append("E_53")
+    return ev
+
+
 def class_posterior(
     evidences: Iterable[str],
     absent: Iterable[str] = (),
@@ -386,7 +401,7 @@ def class_posterior(
     age/sex = None means the patient didn't say. `notes` collects the
     adjustments that fired (see _apply_clinical_adjustments)."""
     posterior = posterior or POSTERIOR
-    present = list(dict.fromkeys(evidences))
+    present = expand_implied(evidences)  # an implied finding also overrides a contradicting "no"
     absent = [e for e in dict.fromkeys(absent) if e not in set(present)]
 
     if posterior == "nb":
@@ -722,6 +737,7 @@ def make_qa_engine(strategy: str = "eig", **posterior_kwargs) -> QAEngine:
         never_ask=_NEVER_ASK,
         likelihoods=LIKELIHOODS,
         posterior_fn=lambda ev, ab, age, sex: class_posterior(ev, ab, age, sex, **posterior_kwargs),
+        expand_fn=expand_implied,
         pool_fn=pool_classes,
         tier_of=tier_of,
         strategy=strategy,

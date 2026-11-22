@@ -276,3 +276,13 @@ def test_eig_stops_when_confident(eig_engine):
 def test_eig_max_rounds(eig_engine):
     result = eig_engine.get_questions(FLU_LIKE, round_num=MAX_ROUNDS + 1)
     assert result.should_stop and result.stop_reason == "max_rounds"
+
+
+def test_pain_is_implied_by_body_aches_and_never_asked():
+    import ml_model as m
+    present = ["E_91", "E_144", "E_201", "E_88"]
+    # a "no" to the generic pain question cannot cancel pain the patient described
+    assert m.predict_distribution(present, None, None, ["E_53", "E_181"]) == m.predict_distribution(present, None, None, ["E_181"])
+    for round_num in (1, 2):
+        res = m.qa_engine.get_questions(present, round_num=round_num, absent=["E_181"])
+        assert "E_53" not in [q.evidence_id for q in res.questions]
