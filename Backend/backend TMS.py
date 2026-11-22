@@ -40,6 +40,10 @@ import llm
 import pipeline_log as plog
 import triage
 import qa_engine as qa_engine_module
+from metrics import metric
+
+# Written by eval/build_report.py; read on every /accuracy_report request.
+ACCURACY_REPORT_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "eval", "accuracy_report.json")
 
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
@@ -929,16 +933,20 @@ _ZONES = ("red", "yellow", "green")
 _ZONE_RANK = {"green": 0, "yellow": 1, "red": 2}
 
 
+# The latest doctor feedback row per diary day: the only rows the accuracy numbers count.
+_LATEST_FEEDBACK_SQL = """
+    SELECT DISTINCT ON (day_id) day_id, diagnosis, zone, model_top1, model_top3, model_zone, model_version
+    FROM diagnosis_feedback
+    ORDER BY day_id, feedback_id DESC
+"""
+
+
 def get_feedback_stats() -> Dict[str, Any]:
     """Accuracy of the model against doctor-confirmed diagnoses (latest row per day)."""
     conn = connect()
     try:
         cur = conn.cursor()
-        cur.execute("""
-            SELECT DISTINCT ON (day_id) day_id, diagnosis, zone, model_top1, model_top3, model_zone, model_version
-            FROM diagnosis_feedback
-            ORDER BY day_id, feedback_id DESC
-        """)
+        cur.execute(_LATEST_FEEDBACK_SQL)
         rows = cur.fetchall()
     finally:
         conn.close()
@@ -995,6 +1003,75 @@ def feedback_stats_from_rows(rows) -> Dict[str, Any]:
         "zone_matrix": zone_matrix,
         "confusions": [{"model": m, "doctor": d, "count": c} for (m, d), c in top_confusions],
     }
+
+
+def real_patients_from_rows(rows, since: Optional[str]) -> Dict[str, Any]:
+    """Real-patient accuracy with metric objects. rows: the _LATEST_FEEDBACK_SQL shape,
+    one per diary day. Pure function, so the arithmetic can be tested without a database."""
+    n = other = top1 = top3 = zone_n = zone_exact = under = over = red_n = red_hit = 0
+    versions: Dict[str, Dict[str, int]] = {}
+    for _day, diagnosis, doctor_zone, model_top1, model_top3, model_zone, model_version in rows:
+        is_other = diagnosis == "other"
+        top3_names = json.loads(model_top3) if model_top3 else []
+        hit1 = (not is_other) and diagnosis == model_top1
+        hit3 = (not is_other) and diagnosis in top3_names
+        n += 1
+        other += is_other
+        top1 += hit1
+        top3 += hit3
+        v = versions.setdefault(model_version or "v2.0", {"n": 0, "top1": 0, "top3": 0})
+        v["n"] += 1
+        v["top1"] += hit1
+        v["top3"] += hit3
+        if doctor_zone in _ZONE_RANK and model_zone in _ZONE_RANK:
+            zone_n += 1
+            zone_exact += doctor_zone == model_zone
+            under += _ZONE_RANK[model_zone] < _ZONE_RANK[doctor_zone]
+            over += _ZONE_RANK[model_zone] > _ZONE_RANK[doctor_zone]
+        if doctor_zone == "red" and model_zone in _ZONE_RANK:
+            red_n += 1
+            red_hit += model_zone == "red"
+    return {
+        "n": n,
+        "other": other,
+        "top1": metric(top1, n),
+        "top3": metric(top3, n),
+        "zone_exact": metric(zone_exact, zone_n),
+        "red_sensitivity": metric(red_hit, red_n),
+        "under_triage": metric(under, zone_n),
+        "over_triage": metric(over, zone_n),
+        "by_version": {
+            name: {"n": v["n"], "top1": metric(v["top1"], v["n"]), "top3": metric(v["top3"], v["n"])}
+            for name, v in sorted(versions.items())
+        },
+        "since": since,
+    }
+
+
+def get_real_patients() -> Dict[str, Any]:
+    conn = connect()
+    try:
+        cur = conn.cursor()
+        cur.execute(_LATEST_FEEDBACK_SQL)
+        rows = cur.fetchall()
+        cur.execute("SELECT MIN(created_at)::date FROM diagnosis_feedback")
+        first = cur.fetchone()[0]
+    finally:
+        conn.close()
+    return real_patients_from_rows(rows, first.isoformat() if first else None)
+
+
+def get_accuracy_report() -> Dict[str, Any]:
+    """The offline snapshot written by eval/build_report.py, plus live real-patient numbers."""
+    real = get_real_patients()
+    try:
+        with open(ACCURACY_REPORT_PATH, encoding="utf-8") as f:
+            report = json.load(f)
+    except (OSError, ValueError):
+        return {"report_missing": True, "real_patients": real}
+    if not isinstance(report, dict):
+        return {"report_missing": True, "real_patients": real}
+    return {**report, "real_patients": real}
 
 
 def get_symptom_graph(patient_id: int, symptom_code: str) -> List[Dict[str, Any]]:
@@ -1309,7 +1386,7 @@ async def analys_endpoint(body: AnalysRequest, user: dict = Depends(require_pati
     top3 = list(distribution.items())[:3]
     top1, top1_score = top3[0]
     # Below the question engine's stop threshold the top-1 is much less reliable
-    # (63.6% vs 95.0% top-1 in eval/simulate.py with realistic answer noise).
+    # (realistic simulation: 10% of patients, 54.9% top-1 vs 94.1% for the rest).
     low_confidence = top1_score < qa_engine_module.STOP_CONFIDENCE
     assessed = triage.assess(distribution, evidences, review)
     out_of_scope = bool(review and review.get("out_of_scope"))
@@ -1621,6 +1698,11 @@ async def list_patients_triage_endpoint(user: dict = Depends(require_doctor)):
 async def feedback_stats_endpoint(user: dict = Depends(require_doctor)):
     """Real-world accuracy: doctor-confirmed diagnoses vs the model, per model version."""
     return get_feedback_stats()
+
+@app.get("/accuracy_report")
+async def accuracy_report_endpoint(user: dict = Depends(require_doctor)):
+    """Offline benchmark snapshot (eval/accuracy_report.json) plus live real_patients numbers."""
+    return get_accuracy_report()
 
 @app.post("/get_patient_info")
 async def get_patient_info_endpoint(body: PatientInfoRequest, user: dict = Depends(require_patient_or_doctor)):

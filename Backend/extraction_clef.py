@@ -27,7 +27,7 @@ from typing import Dict, List, Optional
 import clef
 from extraction import (
     BINARY_CODES, COMMON_LOCATIONS, TRAVEL, _PAIN_CHARACTER,
-    Extraction, Finding, _fallback, apply_safety_net, short_label,
+    Extraction, Finding, _LABEL_OVERRIDES, _fallback, apply_safety_net, short_label,
 )
 from ml_model import LABEL_CLASSES, _feat_idx
 
@@ -56,7 +56,8 @@ def _symptom_batches() -> List[dict]:
     # The option ids say it all; repeating "does the patient report it..." in
     # every question cost ~3K tokens per complaint.
     questions = {
-        code: {"type": "choice", "instructions": short_label(code), "criteria": _STATUS}
+        # Corrected glosses: DDXPlus's English gets several codes wrong (see extraction._LABEL_OVERRIDES)
+        code: {"type": "choice", "instructions": _LABEL_OVERRIDES.get(code) or short_label(code), "criteria": _STATUS}
         for code in BINARY_CODES
     }
     codes = list(questions)
@@ -118,9 +119,16 @@ def _probs(answer: Optional[dict]) -> Dict[str, float]:
     return (answer or {}).get("probabilities") or {}
 
 
+# Codes that alone send a patient to the red zone need more certainty to be
+# pre-ticked. Clef reads any chest pain as "chest pain even at rest" (E_14): on
+# eval/cases_v2.jsonl the 2 true cases scored 0.97-0.98, 17 false ones 0.27-0.93.
+# Below the bar the chip is "?" and the patient decides.
+PRECHECK_MIN_BY_CODE = {"E_14": 0.95}
+
+
 def _banded(code: str, p: float) -> Optional[Finding]:
-    """present if p ≥ PRECHECK_MIN (pre-ticked chip), uncertain if ≥ UNCERTAIN_MIN ("?" chip)."""
-    if p >= PRECHECK_MIN:
+    """present if p ≥ the pre-tick bar (PRECHECK_MIN, or PRECHECK_MIN_BY_CODE), uncertain if ≥ UNCERTAIN_MIN ("?" chip)."""
+    if p >= PRECHECK_MIN_BY_CODE.get(code, PRECHECK_MIN):
         return Finding(code, "present", votes=1, source="clef", confidence=round(p, 3))
     if p >= UNCERTAIN_MIN:
         return Finding(code, "uncertain", votes=1, source="clef", confidence=round(p, 3))

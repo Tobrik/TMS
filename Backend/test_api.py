@@ -575,3 +575,52 @@ def test_export_cases_from_doctor_confirmed_days(api, fake_groq, monkeypatch):
     assert other_case["out_of_scope"] is True
     assert other_case["likely_condition"] == "Бронхит с осложнением"
     assert other_case["text"] == ""
+
+
+# ─── Round 2: accuracy report endpoint ───
+
+def test_accuracy_report_endpoint_real_patients_and_missing_file(api, fake_groq, monkeypatch, tmp_path):
+    from datetime import date
+    client, module = api
+    fake_groq.replies.update({"extract": EXTRACTION, "review": REVIEW})
+    doc = doctor_headers(client)
+    _, patient_headers = register(client, "AccuracyPatient")
+    assert client.get("/accuracy_report", headers=patient_headers).status_code == 403
+    assert client.get("/accuracy_report").status_code in (401, 403)
+
+    # start from one feedback row so the real-patient numbers are exact
+    conn = module.connect()
+    try:
+        cur = conn.cursor()
+        cur.execute("DELETE FROM diagnosis_feedback")
+        conn.commit()
+    finally:
+        conn.close()
+    _, headers = register(client, "Accuracy")
+    _, result = _diagnosed_day(client, headers)
+    resp = client.post("/doctor_feedback", headers=doc, json={
+        "day_id": result["day"], "diagnosis": result["diseaseName"], "zone": result["zone"]})
+    assert resp.status_code == 200, resp.text
+
+    # a report file next to the endpoint's reader
+    report_path = tmp_path / "accuracy_report.json"
+    report_path.write_text(json.dumps({"model_version": "v2.1-nb", "synthetic": {"metrics": {}}}), encoding="utf-8")
+    monkeypatch.setattr(module, "ACCURACY_REPORT_PATH", str(report_path))
+    resp = client.get("/accuracy_report", headers=doc)
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["model_version"] == "v2.1-nb" and "report_missing" not in body
+    real = body["real_patients"]
+    assert real["n"] == 1 and real["other"] == 0
+    assert real["top1"] == {"value": 1.0, "k": 1, "n": 1, "ci": real["top1"]["ci"]}
+    assert set(real["top3"]) == {"value", "k", "n", "ci"} and real["top3"]["k"] == 1
+    assert real["by_version"]["v2.1-nb"]["n"] == 1
+    assert date.fromisoformat(real["since"])
+
+    # missing file: 200, report_missing, real numbers still there
+    monkeypatch.setattr(module, "ACCURACY_REPORT_PATH", str(tmp_path / "missing.json"))
+    resp = client.get("/accuracy_report", headers=doc)
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["report_missing"] is True and body["real_patients"]["n"] == 1
+    assert set(body) == {"report_missing", "real_patients"}

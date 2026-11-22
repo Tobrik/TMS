@@ -14,11 +14,11 @@ free text ──► /extract_symptoms ──► patient confirms ──► /next
 
 | Stage | Module | How |
 |---|---|---|
-| Extraction | `extraction.py`, `extraction_clef.py` | Groq (default) or Cloudflare Clef (`EXTRACTION_BACKEND=clef`, falls back to Groq). Groq: strict-JSON LLM calls (`gpt-oss-120b`). Every finding is *present / absent / uncertain* and must quote the patient's words; unquotable findings are dropped (1 call by default; `LLM_EXTRACTION_SAMPLES=3` votes, minority findings become "uncertain"). Clef: one probability per symptom; ≥ 0.8 is pre-ticked for the patient, 0.25–0.8 shown as "?", denials pre-marked only at ≥ 0.8. A regex safety net adds missed red flags, and a rule-based denial net (`negation.py`, RU / KK / EN) adds denials the extractor missed ("кашля нет", "жөтел жоқ", "тамағым ауырмайды", "no fever"); it never denies pain or a pain location. Without an LLM, falls back to regex + BM25. |
+| Extraction | `extraction.py`, `extraction_clef.py` | Groq (default) or Cloudflare Clef (`EXTRACTION_BACKEND=clef`, falls back to Groq). Groq: strict-JSON LLM calls (`gpt-oss-120b`). Every finding is *present / absent / uncertain* and must quote the patient's words; unquotable findings are dropped (1 call by default; `LLM_EXTRACTION_SAMPLES=3` votes, minority findings become "uncertain"). Clef: one probability per symptom (asked with corrected DDXPlus glosses); ≥ 0.8 is pre-ticked for the patient (≥ 0.95 for chest pain at rest, which Clef over-reads), 0.25–0.8 shown as "?", denials pre-marked only at ≥ 0.8. A regex safety net adds missed red flags, and a rule-based denial net (`negation.py`, RU / KK / EN) adds denials the extractor missed ("кашля нет", "жөтел жоқ", "тамағым ауырмайды", "no fever"); it never denies pain or a pain location. Without an LLM, falls back to regex + BM25. |
 | Safety review | `extraction.py` | Separate LLM call: emergency? complaint outside the 49 conditions (e.g. appendicitis)? Can only raise the triage zone. |
 | Diagnosis | `ml_model.py` | Naive Bayes over per-disease evidence frequencies (`training sklearn/evidence_stats.json`). Uses reported *and* denied answers; age/sex only when stated. The RandomForest is still available (`POSTERIOR = "rf"`). |
 | Questions | `qa_engine.py` | Expected information gain over diseases + triage tier; "no" answers count, "don't know" answers are only excluded from later questions. Up to 2 rounds of 3; stops at 70% confidence. A result that ends below 70% is returned with `low_confidence: true` and the patient is told to show all three options to a doctor. |
-| Triage | `triage.py` | Worst plausible condition, not the top-1: red if ≥10% probability mass on red-tier diseases, or a red-flag symptom, or a verified LLM emergency. Disease tiers combine the curated lists with DDXPlus severity. |
+| Triage | `triage.py` | Worst plausible condition, not the top-1: red if ≥10% probability mass on red-tier diseases, or a red-flag symptom (chest pain at rest E_14, stridor E_194), or a verified LLM emergency. Disease tiers combine the curated lists with DDXPlus severity. |
 | Explanations | `/explain` | The LLM is given measured leave-one-out effects of each answer and writes patient / doctor text; it is told not to invent symptom weights. |
 | LLM access | `llm.py` | One place for all calls; model fallback lists from env; schema → JSON-mode fallback. |
 
@@ -37,7 +37,7 @@ free text ──► /extract_symptoms ──► patient confirms ──► /next
 
 Since 2026-11-22 Chagas counts only after travel to Central or South America (`_TRAVEL_ONLY` in `ml_model.py`): its synthetic DDXPlus profile used to top vague headache complaints. The simulation skips DDXPlus Chagas patients without that travel, as it skips Ebola. Rows above that line were measured before this change.
 
-In the realistic setting, the 17% of patients who use up both question rounds without reaching 70% confidence get 63.6% top-1 (95.0% for the rest), hence the `low_confidence` flag. Asking more (3 rounds, or a 0.8 / 0.9 stop threshold) did not help: with 10% wrong answers, extra questions add as much noise as information.
+In the realistic setting, 10% of patients end below 70% confidence; they get 54.9% top-1 against 94.1% for the rest, hence the `low_confidence` flag. Asking more (3 rounds, or a 0.8 / 0.9 stop threshold) did not help: with 10% wrong answers, extra questions add as much noise as information.
 
 Red under-triage = truly red-tier patients not sent to the red zone; over-triage = green-tier patients sent to red. The triage threshold (`RED_MASS_THRESHOLD = 0.10`) is tuned for naive Bayes: the RF's posteriors are too flat (mean top-1 probability 0.23), so with the RF the same rule sends two thirds of green patients to red — re-tune with the sweep the script prints before switching back.
 
@@ -46,6 +46,22 @@ The RF was trained on complete DDXPlus records (~20 evidences each, 0 = "absent"
 ### Real-world accuracy (doctor feedback)
 
 Doctors confirm the actual diagnosis per diary day on the dashboard ("Подтвердить диагноз": one of the 46 conditions or "other", plus the zone). `POST /doctor_feedback` stores it next to the model's top-1, top-3, zone and `MODEL_VERSION`, append-only. `GET /feedback_stats` gives top-1 / top-3 agreement, zone agreement and under- / over-triage counts per model version (shown in the "Точность модели" panel), and `python eval/export_real_cases.py OUT.jsonl [--with-text]` turns confirmed cases into an eval set in the `eval/cases.jsonl` format. This is the only measure of accuracy on real patients; everything else in this README is synthetic or self-written.
+
+### Accuracy report for doctors
+
+`/accuracy` (doctor login; `/accuracy?mock=1` shows sample data without login) presents three levels of evidence, most trustworthy first, each number with its 95% Wilson interval and n: diagnoses confirmed by doctors (live, from `/doctor_feedback`), held-out written complaints, and the synthetic DDXPlus simulation. It also shows triage safety, results by language, the weakest conditions and calibration, with the caveats in Russian, Kazakh and English. Print / PDF works from the page.
+
+The benchmark part is a snapshot, `Backend/eval/accuracy_report.json`, served with the live numbers by `GET /accuracy_report`. Rebuild it after any change to the model, prompts or thresholds:
+
+```bash
+cd Backend
+python eval/compare_extraction.py --cases eval/cases_v3.jsonl --backends clef-flash --tag v3   # extraction on the held-out set (API calls)
+python eval/build_report.py --patients path/to/release_test_patients --cases eval/cases_v3.jsonl --backend clef-flash --tag v3
+```
+
+`eval/cases_v3.jsonl` is the only set that was never used for tuning (`HELD_OUT_FILES` in `build_report.py`); `cases.jsonl` and `cases_v2.jsonl` were used to tune prompts, the denial rules and thresholds. A report built from them is labelled preliminary on the page.
+
+Free-tier limits decide how much can be evaluated (and served) per day: Cloudflare Workers AI gives 10,000 neurons a day, about 290 Clef-flash complaints; Groq gives about 200K tokens a day per model, about 35 complaints with the safety review. A backend that runs out falls back (Clef → Groq → regex), so a busy day silently degrades extraction.
 
 ## Running
 

@@ -45,6 +45,7 @@ def test_tiers_include_ddxplus_severity():
 
 
 def test_critical_alert():
-    assert "СТРИДОР" in triage.critical_alert(["E_112"])["message"]
+    assert "СТРИДОР" in triage.critical_alert(["E_194"])["message"]
+    assert triage.critical_alert(["E_112"]) is None  # the whoop of whooping cough is not stridor
     assert triage.critical_alert(["E_14", "E_50"])["level"] == "red"
     assert triage.critical_alert(["E_181"]) is None

@@ -201,6 +201,7 @@ def _run_patients(pipeline: Pipeline, patients: List[dict], seed: int) -> List[d
         truth = m._GROUP_MAP.get(p["PATHOLOGY"], p["PATHOLOGY"])
         top = list(dist)
         out.append({
+            "truth": truth,
             "truth_tier": triage.tier_of(p["PATHOLOGY"]),
             "zone": zone,
             "top1": top[0] == truth,

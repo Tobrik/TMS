@@ -47,7 +47,7 @@ _VOCAB: List[Tuple[str, List[str]]] = [
     (r"свист\w+.{0,10}дыхани|хрипит|хриплое\s+дыхани|свист\w+.{0,10}выдох|хрипы\s+при\s+выдох",
      ["E_214"]),  # wheezing on exhale
     (r"стридор|свист\w+.{0,10}вдох|шумн\w+\s+дыхани",
-     ["E_112"]),  # stridor / wheezing on inhale
+     ["E_194"]),  # stridor / high-pitched noise on inhale
     (r"боль.{0,10}горл|горло.{0,10}бол|глотать\s+больно|больно\s+глотать|фарингит|тонзиллит|горло\s+дер\w+|болит\s+горло",
      ["E_97", "E_53", "E_55_@_V_148"]),  # sore throat → pain present + pharynx location
     (r"чихани|чихает|чихаю",
@@ -295,7 +295,7 @@ _VOCAB: List[Tuple[str, List[str]]] = [
     (r"wheez\w+|wheezing\s+(?:on|when)\s+exhal",
      ["E_214"]),  # wheezing on exhale
     (r"stridor|noisy\s+breath\w*\s+(?:in|when\s+inhal)",
-     ["E_112"]),  # stridor
+     ["E_194"]),  # stridor
     (r"sore\s+throat|throat\s+(?:hurts|pain|ache)|painful\s+(?:to\s+)?swallow|difficulty\s+swallow",
      ["E_97", "E_53", "E_55_@_V_148"]),  # sore throat → pain + pharynx
     (r"pain.{0,15}(?:deep\s+breath|breath\w+\s+in|inhal)|hurts\s+(?:to|when\s+(?:i\s+)?)\s*breath|pleuritic|(?:hurts|pain).{0,10}breath\w*\s+(?:in\s+)?deeply",
@@ -735,10 +735,10 @@ _VOCAB: List[Tuple[str, List[str]]] = [
      ["E_53", "E_55_@_V_55", "E_216"]),
 
     # ── Barking cough → Croup ─────────────────────────────────────────────────
-    (r"barking\s+cough|croup|seal.{0,5}(?:like\s+)?cough|stridor\w*\s+(?:child|baby|infant|kid)",
-     ["E_201", "E_112"]),
+    (r"barking\s+cough|croup|seal.{0,5}(?:like\s+)?cough",
+     ["E_201", "E_202"]),
     (r"лающий\s+каш\w+|круп|каш\w+\s+(?:как\s+)?лай",
-     ["E_201", "E_112"]),
+     ["E_201", "E_202"]),
 
     # ══════════════════════════════════════════════════════════════════════════
     # ── Added for denial detection (negation.py): KK/EN gaps and denial forms ─

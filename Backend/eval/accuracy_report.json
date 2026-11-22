@@ -1,0 +1,1363 @@
+{
+  "generated_at": "2026-11-22T16:34:54Z",
+  "model_version": "v2.1-nb",
+  "extraction_backend": "clef-flash",
+  "synthetic": {
+    "source": "DDXPlus test patients (synthetic), simulated conversation",
+    "settings": {
+      "n": 3000,
+      "seed": 7,
+      "noise": 0.3,
+      "answer_error": 0.1,
+      "dont_know": 0.2
+    },
+    "metrics": {
+      "top1": {
+        "value": 0.902,
+        "k": 2705,
+        "n": 3000,
+        "ci": [
+          0.89,
+          0.912
+        ]
+      },
+      "top3": {
+        "value": 0.977,
+        "k": 2931,
+        "n": 3000,
+        "ci": [
+          0.971,
+          0.982
+        ]
+      },
+      "red_sensitivity": {
+        "value": 0.992,
+        "k": 490,
+        "n": 494,
+        "ci": [
+          0.979,
+          0.997
+        ]
+      },
+      "red_to_green": {
+        "value": 0.0,
+        "k": 0,
+        "n": 494,
+        "ci": [
+          0.0,
+          0.008
+        ]
+      },
+      "green_to_red": {
+        "value": 0.065,
+        "k": 114,
+        "n": 1742,
+        "ci": [
+          0.055,
+          0.078
+        ]
+      },
+      "zone_exact": {
+        "value": 0.704,
+        "k": 2113,
+        "n": 3000,
+        "ci": [
+          0.688,
+          0.72
+        ]
+      }
+    },
+    "questions_mean": 1.69,
+    "calibration": [
+      {
+        "bin": "0.0-0.1",
+        "n": 0,
+        "mean_confidence": null,
+        "accuracy": null
+      },
+      {
+        "bin": "0.1-0.2",
+        "n": 11,
+        "mean_confidence": 0.168,
+        "accuracy": 0.273
+      },
+      {
+        "bin": "0.2-0.3",
+        "n": 31,
+        "mean_confidence": 0.252,
+        "accuracy": 0.258
+      },
+      {
+        "bin": "0.3-0.4",
+        "n": 40,
+        "mean_confidence": 0.351,
+        "accuracy": 0.525
+      },
+      {
+        "bin": "0.4-0.5",
+        "n": 67,
+        "mean_confidence": 0.458,
+        "accuracy": 0.567
+      },
+      {
+        "bin": "0.5-0.6",
+        "n": 88,
+        "mean_confidence": 0.552,
+        "accuracy": 0.58
+      },
+      {
+        "bin": "0.6-0.7",
+        "n": 67,
+        "mean_confidence": 0.641,
+        "accuracy": 0.687
+      },
+      {
+        "bin": "0.7-0.8",
+        "n": 429,
+        "mean_confidence": 0.75,
+        "accuracy": 0.848
+      },
+      {
+        "bin": "0.8-0.9",
+        "n": 760,
+        "mean_confidence": 0.857,
+        "accuracy": 0.922
+      },
+      {
+        "bin": "0.9-1.0",
+        "n": 1507,
+        "mean_confidence": 0.959,
+        "accuracy": 0.977
+      }
+    ],
+    "low_confidence": {
+      "share": {
+        "value": 0.101,
+        "k": 304,
+        "n": 3000,
+        "ci": [
+          0.091,
+          0.113
+        ]
+      },
+      "top1_low": {
+        "value": 0.549,
+        "k": 167,
+        "n": 304,
+        "ci": [
+          0.493,
+          0.604
+        ]
+      },
+      "top1_rest": {
+        "value": 0.941,
+        "k": 2538,
+        "n": 2696,
+        "ci": [
+          0.932,
+          0.95
+        ]
+      }
+    },
+    "per_condition": [
+      {
+        "name": "Stable angina",
+        "label_ru": "Стабильная стенокардия",
+        "tier": "yellow",
+        "top1": {
+          "value": 0.509,
+          "k": 29,
+          "n": 57,
+          "ci": [
+            0.383,
+            0.634
+          ]
+        },
+        "top3": {
+          "value": 0.825,
+          "k": 47,
+          "n": 57,
+          "ci": [
+            0.706,
+            0.902
+          ]
+        }
+      },
+      {
+        "name": "Acute rhinosinusitis",
+        "label_ru": "Острый риносинусит",
+        "tier": "green",
+        "top1": {
+          "value": 0.51,
+          "k": 25,
+          "n": 49,
+          "ci": [
+            0.375,
+            0.644
+          ]
+        },
+        "top3": {
+          "value": 0.959,
+          "k": 47,
+          "n": 49,
+          "ci": [
+            0.863,
+            0.989
+          ]
+        }
+      },
+      {
+        "name": "PSVT",
+        "label_ru": "Пароксизмальная суправентрикулярная тахикардия",
+        "tier": "yellow",
+        "top1": {
+          "value": 0.688,
+          "k": 33,
+          "n": 48,
+          "ci": [
+            0.547,
+            0.801
+          ]
+        },
+        "top3": {
+          "value": 1.0,
+          "k": 48,
+          "n": 48,
+          "ci": [
+            0.926,
+            1.0
+          ]
+        }
+      },
+      {
+        "name": "Tuberculosis",
+        "label_ru": "Туберкулёз",
+        "tier": "yellow",
+        "top1": {
+          "value": 0.688,
+          "k": 33,
+          "n": 48,
+          "ci": [
+            0.547,
+            0.801
+          ]
+        },
+        "top3": {
+          "value": 0.875,
+          "k": 42,
+          "n": 48,
+          "ci": [
+            0.753,
+            0.941
+          ]
+        }
+      },
+      {
+        "name": "Myocarditis",
+        "label_ru": "Миокардит",
+        "tier": "yellow",
+        "top1": {
+          "value": 0.73,
+          "k": 27,
+          "n": 37,
+          "ci": [
+            0.57,
+            0.846
+          ]
+        },
+        "top3": {
+          "value": 0.973,
+          "k": 36,
+          "n": 37,
+          "ci": [
+            0.862,
+            0.995
+          ]
+        }
+      },
+      {
+        "name": "Bronchiectasis",
+        "label_ru": "Бронхоэктатическая болезнь",
+        "tier": "green",
+        "top1": {
+          "value": 0.75,
+          "k": 45,
+          "n": 60,
+          "ci": [
+            0.628,
+            0.842
+          ]
+        },
+        "top3": {
+          "value": 0.883,
+          "k": 53,
+          "n": 60,
+          "ci": [
+            0.778,
+            0.942
+          ]
+        }
+      },
+      {
+        "name": "Spontaneous pneumothorax",
+        "label_ru": "Спонтанный пневмоторакс",
+        "tier": "red",
+        "top1": {
+          "value": 0.786,
+          "k": 22,
+          "n": 28,
+          "ci": [
+            0.605,
+            0.898
+          ]
+        },
+        "top3": {
+          "value": 0.929,
+          "k": 26,
+          "n": 28,
+          "ci": [
+            0.774,
+            0.98
+          ]
+        }
+      },
+      {
+        "name": "Chronic rhinosinusitis",
+        "label_ru": "Хронический риносинусит",
+        "tier": "green",
+        "top1": {
+          "value": 0.787,
+          "k": 48,
+          "n": 61,
+          "ci": [
+            0.669,
+            0.871
+          ]
+        },
+        "top3": {
+          "value": 0.967,
+          "k": 59,
+          "n": 61,
+          "ci": [
+            0.888,
+            0.991
+          ]
+        }
+      },
+      {
+        "name": "Acute COPD exacerbation / infection",
+        "label_ru": "Обострение ХОБЛ / инфекция",
+        "tier": "green",
+        "top1": {
+          "value": 0.808,
+          "k": 42,
+          "n": 52,
+          "ci": [
+            0.681,
+            0.892
+          ]
+        },
+        "top3": {
+          "value": 0.962,
+          "k": 50,
+          "n": 52,
+          "ci": [
+            0.87,
+            0.989
+          ]
+        }
+      },
+      {
+        "name": "Pericarditis",
+        "label_ru": "Перикардит",
+        "tier": "green",
+        "top1": {
+          "value": 0.812,
+          "k": 56,
+          "n": 69,
+          "ci": [
+            0.704,
+            0.886
+          ]
+        },
+        "top3": {
+          "value": 0.971,
+          "k": 67,
+          "n": 69,
+          "ci": [
+            0.9,
+            0.992
+          ]
+        }
+      },
+      {
+        "name": "Bronchitis",
+        "label_ru": "Бронхит",
+        "tier": "green",
+        "top1": {
+          "value": 0.828,
+          "k": 72,
+          "n": 87,
+          "ci": [
+            0.735,
+            0.893
+          ]
+        },
+        "top3": {
+          "value": 0.989,
+          "k": 86,
+          "n": 87,
+          "ci": [
+            0.938,
+            0.998
+          ]
+        }
+      },
+      {
+        "name": "Bronchospasm / acute asthma exacerbation",
+        "label_ru": "Бронхоспазм / Обострение астмы",
+        "tier": "yellow",
+        "top1": {
+          "value": 0.833,
+          "k": 40,
+          "n": 48,
+          "ci": [
+            0.704,
+            0.913
+          ]
+        },
+        "top3": {
+          "value": 0.917,
+          "k": 44,
+          "n": 48,
+          "ci": [
+            0.804,
+            0.967
+          ]
+        }
+      },
+      {
+        "name": "Possible NSTEMI / STEMI",
+        "label_ru": "Возможный инфаркт миокарда (НСТМИ/СТМИ)",
+        "tier": "red",
+        "top1": {
+          "value": 0.884,
+          "k": 122,
+          "n": 138,
+          "ci": [
+            0.82,
+            0.927
+          ]
+        },
+        "top3": {
+          "value": 0.993,
+          "k": 137,
+          "n": 138,
+          "ci": [
+            0.96,
+            0.999
+          ]
+        }
+      },
+      {
+        "name": "Influenza",
+        "label_ru": "Грипп / ОРВИ",
+        "tier": "green",
+        "top1": {
+          "value": 0.889,
+          "k": 64,
+          "n": 72,
+          "ci": [
+            0.796,
+            0.943
+          ]
+        },
+        "top3": {
+          "value": 1.0,
+          "k": 72,
+          "n": 72,
+          "ci": [
+            0.949,
+            1.0
+          ]
+        }
+      },
+      {
+        "name": "Cluster headache",
+        "label_ru": "Кластерная головная боль",
+        "tier": "green",
+        "top1": {
+          "value": 0.891,
+          "k": 49,
+          "n": 55,
+          "ci": [
+            0.782,
+            0.949
+          ]
+        },
+        "top3": {
+          "value": 0.945,
+          "k": 52,
+          "n": 55,
+          "ci": [
+            0.851,
+            0.981
+          ]
+        }
+      },
+      {
+        "name": "Allergic sinusitis",
+        "label_ru": "Аллергический синусит",
+        "tier": "green",
+        "top1": {
+          "value": 0.898,
+          "k": 44,
+          "n": 49,
+          "ci": [
+            0.782,
+            0.956
+          ]
+        },
+        "top3": {
+          "value": 0.918,
+          "k": 45,
+          "n": 49,
+          "ci": [
+            0.808,
+            0.968
+          ]
+        }
+      },
+      {
+        "name": "Acute otitis media",
+        "label_ru": "Острый средний отит",
+        "tier": "green",
+        "top1": {
+          "value": 0.905,
+          "k": 95,
+          "n": 105,
+          "ci": [
+            0.834,
+            0.947
+          ]
+        },
+        "top3": {
+          "value": 0.981,
+          "k": 103,
+          "n": 105,
+          "ci": [
+            0.933,
+            0.995
+          ]
+        }
+      },
+      {
+        "name": "Acute laryngitis",
+        "label_ru": "Острый ларингит",
+        "tier": "green",
+        "top1": {
+          "value": 0.911,
+          "k": 72,
+          "n": 79,
+          "ci": [
+            0.828,
+            0.956
+          ]
+        },
+        "top3": {
+          "value": 1.0,
+          "k": 79,
+          "n": 79,
+          "ci": [
+            0.954,
+            1.0
+          ]
+        }
+      },
+      {
+        "name": "Pulmonary embolism",
+        "label_ru": "Тромбоэмболия лёгочной артерии (ТЭЛА)",
+        "tier": "red",
+        "top1": {
+          "value": 0.914,
+          "k": 74,
+          "n": 81,
+          "ci": [
+            0.832,
+            0.958
+          ]
+        },
+        "top3": {
+          "value": 1.0,
+          "k": 81,
+          "n": 81,
+          "ci": [
+            0.955,
+            1.0
+          ]
+        }
+      },
+      {
+        "name": "Atrial fibrillation",
+        "label_ru": "Мерцательная аритмия",
+        "tier": "yellow",
+        "top1": {
+          "value": 0.915,
+          "k": 54,
+          "n": 59,
+          "ci": [
+            0.816,
+            0.963
+          ]
+        },
+        "top3": {
+          "value": 0.949,
+          "k": 56,
+          "n": 59,
+          "ci": [
+            0.861,
+            0.983
+          ]
+        }
+      },
+      {
+        "name": "Pneumonia",
+        "label_ru": "Пневмония",
+        "tier": "yellow",
+        "top1": {
+          "value": 0.921,
+          "k": 70,
+          "n": 76,
+          "ci": [
+            0.838,
+            0.963
+          ]
+        },
+        "top3": {
+          "value": 0.987,
+          "k": 75,
+          "n": 76,
+          "ci": [
+            0.929,
+            0.998
+          ]
+        }
+      },
+      {
+        "name": "Boerhaave",
+        "label_ru": "Синдром Бурхаве (разрыв пищевода)",
+        "tier": "red",
+        "top1": {
+          "value": 0.927,
+          "k": 38,
+          "n": 41,
+          "ci": [
+            0.806,
+            0.975
+          ]
+        },
+        "top3": {
+          "value": 1.0,
+          "k": 41,
+          "n": 41,
+          "ci": [
+            0.914,
+            1.0
+          ]
+        }
+      },
+      {
+        "name": "Pulmonary neoplasm",
+        "label_ru": "Новообразование лёгкого",
+        "tier": "yellow",
+        "top1": {
+          "value": 0.947,
+          "k": 36,
+          "n": 38,
+          "ci": [
+            0.827,
+            0.985
+          ]
+        },
+        "top3": {
+          "value": 1.0,
+          "k": 38,
+          "n": 38,
+          "ci": [
+            0.908,
+            1.0
+          ]
+        }
+      },
+      {
+        "name": "URTI",
+        "label_ru": "ОРВИ (инфекция верхних дыхательных путей)",
+        "tier": "green",
+        "top1": {
+          "value": 0.947,
+          "k": 180,
+          "n": 190,
+          "ci": [
+            0.906,
+            0.971
+          ]
+        },
+        "top3": {
+          "value": 1.0,
+          "k": 190,
+          "n": 190,
+          "ci": [
+            0.98,
+            1.0
+          ]
+        }
+      },
+      {
+        "name": "Scombroid food poisoning",
+        "label_ru": "Скомброидное пищевое отравление",
+        "tier": "yellow",
+        "top1": {
+          "value": 0.948,
+          "k": 55,
+          "n": 58,
+          "ci": [
+            0.859,
+            0.982
+          ]
+        },
+        "top3": {
+          "value": 0.983,
+          "k": 57,
+          "n": 58,
+          "ci": [
+            0.909,
+            0.997
+          ]
+        }
+      },
+      {
+        "name": "Sarcoidosis",
+        "label_ru": "Саркоидоз",
+        "tier": "green",
+        "top1": {
+          "value": 0.958,
+          "k": 68,
+          "n": 71,
+          "ci": [
+            0.883,
+            0.986
+          ]
+        },
+        "top3": {
+          "value": 0.958,
+          "k": 68,
+          "n": 71,
+          "ci": [
+            0.883,
+            0.986
+          ]
+        }
+      },
+      {
+        "name": "Spontaneous rib fracture",
+        "label_ru": "Спонтанный перелом ребра",
+        "tier": "green",
+        "top1": {
+          "value": 0.958,
+          "k": 23,
+          "n": 24,
+          "ci": [
+            0.798,
+            0.993
+          ]
+        },
+        "top3": {
+          "value": 1.0,
+          "k": 24,
+          "n": 24,
+          "ci": [
+            0.862,
+            1.0
+          ]
+        }
+      },
+      {
+        "name": "Guillain-Barré syndrome",
+        "label_ru": "Синдром Гийена-Барре",
+        "tier": "yellow",
+        "top1": {
+          "value": 0.965,
+          "k": 55,
+          "n": 57,
+          "ci": [
+            0.881,
+            0.99
+          ]
+        },
+        "top3": {
+          "value": 1.0,
+          "k": 57,
+          "n": 57,
+          "ci": [
+            0.937,
+            1.0
+          ]
+        }
+      },
+      {
+        "name": "Viral pharyngitis",
+        "label_ru": "Вирусный фарингит",
+        "tier": "green",
+        "top1": {
+          "value": 0.967,
+          "k": 203,
+          "n": 210,
+          "ci": [
+            0.933,
+            0.984
+          ]
+        },
+        "top3": {
+          "value": 0.99,
+          "k": 208,
+          "n": 210,
+          "ci": [
+            0.966,
+            0.997
+          ]
+        }
+      },
+      {
+        "name": "Acute pulmonary edema",
+        "label_ru": "Острый отёк лёгких",
+        "tier": "red",
+        "top1": {
+          "value": 0.968,
+          "k": 61,
+          "n": 63,
+          "ci": [
+            0.891,
+            0.991
+          ]
+        },
+        "top3": {
+          "value": 0.984,
+          "k": 62,
+          "n": 63,
+          "ci": [
+            0.915,
+            0.997
+          ]
+        }
+      },
+      {
+        "name": "Pancreatic neoplasm",
+        "label_ru": "Новообразование поджелудочной железы",
+        "tier": "yellow",
+        "top1": {
+          "value": 0.97,
+          "k": 65,
+          "n": 67,
+          "ci": [
+            0.898,
+            0.992
+          ]
+        },
+        "top3": {
+          "value": 1.0,
+          "k": 67,
+          "n": 67,
+          "ci": [
+            0.946,
+            1.0
+          ]
+        }
+      },
+      {
+        "name": "HIV (initial infection)",
+        "label_ru": "ВИЧ (первичная инфекция)",
+        "tier": "yellow",
+        "top1": {
+          "value": 0.976,
+          "k": 83,
+          "n": 85,
+          "ci": [
+            0.918,
+            0.994
+          ]
+        },
+        "top3": {
+          "value": 1.0,
+          "k": 85,
+          "n": 85,
+          "ci": [
+            0.957,
+            1.0
+          ]
+        }
+      },
+      {
+        "name": "Panic attack",
+        "label_ru": "Паническая атака",
+        "tier": "green",
+        "top1": {
+          "value": 0.978,
+          "k": 89,
+          "n": 91,
+          "ci": [
+            0.923,
+            0.994
+          ]
+        },
+        "top3": {
+          "value": 0.989,
+          "k": 90,
+          "n": 91,
+          "ci": [
+            0.94,
+            0.998
+          ]
+        }
+      },
+      {
+        "name": "Epiglottitis",
+        "label_ru": "Эпиглоттит",
+        "tier": "red",
+        "top1": {
+          "value": 0.98,
+          "k": 48,
+          "n": 49,
+          "ci": [
+            0.893,
+            0.996
+          ]
+        },
+        "top3": {
+          "value": 1.0,
+          "k": 49,
+          "n": 49,
+          "ci": [
+            0.927,
+            1.0
+          ]
+        }
+      },
+      {
+        "name": "Localized edema",
+        "label_ru": "Локализованный отёк",
+        "tier": "green",
+        "top1": {
+          "value": 0.988,
+          "k": 83,
+          "n": 84,
+          "ci": [
+            0.936,
+            0.998
+          ]
+        },
+        "top3": {
+          "value": 0.988,
+          "k": 83,
+          "n": 84,
+          "ci": [
+            0.936,
+            0.998
+          ]
+        }
+      },
+      {
+        "name": "Anemia",
+        "label_ru": "Анемия",
+        "tier": "green",
+        "top1": {
+          "value": 0.993,
+          "k": 146,
+          "n": 147,
+          "ci": [
+            0.962,
+            0.999
+          ]
+        },
+        "top3": {
+          "value": 1.0,
+          "k": 147,
+          "n": 147,
+          "ci": [
+            0.975,
+            1.0
+          ]
+        }
+      },
+      {
+        "name": "Acute dystonic reactions",
+        "label_ru": "Острые дистонические реакции",
+        "tier": "yellow",
+        "top1": {
+          "value": 1.0,
+          "k": 77,
+          "n": 77,
+          "ci": [
+            0.952,
+            1.0
+          ]
+        },
+        "top3": {
+          "value": 1.0,
+          "k": 77,
+          "n": 77,
+          "ci": [
+            0.952,
+            1.0
+          ]
+        }
+      },
+      {
+        "name": "Anaphylaxis",
+        "label_ru": "Анафилаксия",
+        "tier": "red",
+        "top1": {
+          "value": 1.0,
+          "k": 76,
+          "n": 76,
+          "ci": [
+            0.952,
+            1.0
+          ]
+        },
+        "top3": {
+          "value": 1.0,
+          "k": 76,
+          "n": 76,
+          "ci": [
+            0.952,
+            1.0
+          ]
+        }
+      },
+      {
+        "name": "GERD",
+        "label_ru": "ГЭРБ (Гастроэзофагеальный рефлюкс)",
+        "tier": "green",
+        "top1": {
+          "value": 1.0,
+          "k": 88,
+          "n": 88,
+          "ci": [
+            0.958,
+            1.0
+          ]
+        },
+        "top3": {
+          "value": 1.0,
+          "k": 88,
+          "n": 88,
+          "ci": [
+            0.958,
+            1.0
+          ]
+        }
+      },
+      {
+        "name": "Myasthenia gravis",
+        "label_ru": "Миастения гравис",
+        "tier": "green",
+        "top1": {
+          "value": 1.0,
+          "k": 50,
+          "n": 50,
+          "ci": [
+            0.929,
+            1.0
+          ]
+        },
+        "top3": {
+          "value": 1.0,
+          "k": 50,
+          "n": 50,
+          "ci": [
+            0.929,
+            1.0
+          ]
+        }
+      },
+      {
+        "name": "SLE",
+        "label_ru": "Системная красная волчанка",
+        "tier": "green",
+        "top1": {
+          "value": 1.0,
+          "k": 38,
+          "n": 38,
+          "ci": [
+            0.908,
+            1.0
+          ]
+        },
+        "top3": {
+          "value": 1.0,
+          "k": 38,
+          "n": 38,
+          "ci": [
+            0.908,
+            1.0
+          ]
+        }
+      }
+    ]
+  },
+  "written_cases": {
+    "source": "eval/cases_v2.jsonl: 120 free-text complaints (ru, kk, ru-kk mixed, en), held out",
+    "cases_file": "eval/cases_v2.jsonl",
+    "n_in_scope": 110,
+    "n_out_of_scope": 10,
+    "extraction": {
+      "precision": {
+        "value": 0.781,
+        "k": 429,
+        "n": 549,
+        "ci": [
+          0.745,
+          0.814
+        ]
+      },
+      "recall": {
+        "value": 0.773,
+        "k": 429,
+        "n": 555,
+        "ci": [
+          0.736,
+          0.806
+        ]
+      },
+      "denials": {
+        "value": 0.95,
+        "k": 95,
+        "n": 100,
+        "ci": [
+          0.888,
+          0.978
+        ]
+      },
+      "red_flag_recall": {
+        "value": 0.966,
+        "k": 113,
+        "n": 117,
+        "ci": [
+          0.915,
+          0.987
+        ]
+      }
+    },
+    "patient_accepts": {
+      "top1": {
+        "value": 0.827,
+        "k": 91,
+        "n": 110,
+        "ci": [
+          0.746,
+          0.887
+        ]
+      },
+      "top3": {
+        "value": 0.955,
+        "k": 105,
+        "n": 110,
+        "ci": [
+          0.898,
+          0.98
+        ]
+      },
+      "red_sensitivity": {
+        "value": 1.0,
+        "k": 18,
+        "n": 18,
+        "ci": [
+          0.824,
+          1.0
+        ]
+      },
+      "red_to_green": {
+        "value": 0.0,
+        "k": 0,
+        "n": 18,
+        "ci": [
+          0.0,
+          0.176
+        ]
+      },
+      "green_to_red": {
+        "value": 0.194,
+        "k": 12,
+        "n": 62,
+        "ci": [
+          0.114,
+          0.309
+        ]
+      }
+    },
+    "patient_confirms": {
+      "top1": {
+        "value": 0.927,
+        "k": 102,
+        "n": 110,
+        "ci": [
+          0.863,
+          0.963
+        ]
+      },
+      "top3": {
+        "value": 0.973,
+        "k": 107,
+        "n": 110,
+        "ci": [
+          0.923,
+          0.991
+        ]
+      },
+      "red_sensitivity": {
+        "value": 1.0,
+        "k": 18,
+        "n": 18,
+        "ci": [
+          0.824,
+          1.0
+        ]
+      },
+      "red_to_green": {
+        "value": 0.0,
+        "k": 0,
+        "n": 18,
+        "ci": [
+          0.0,
+          0.176
+        ]
+      },
+      "green_to_red": {
+        "value": 0.129,
+        "k": 8,
+        "n": 62,
+        "ci": [
+          0.067,
+          0.234
+        ]
+      }
+    },
+    "by_language": {
+      "ru": {
+        "n": 41,
+        "top1": {
+          "value": 0.902,
+          "k": 37,
+          "n": 41,
+          "ci": [
+            0.775,
+            0.961
+          ]
+        }
+      },
+      "kk": {
+        "n": 32,
+        "top1": {
+          "value": 0.938,
+          "k": 30,
+          "n": 32,
+          "ci": [
+            0.799,
+            0.983
+          ]
+        }
+      },
+      "mix": {
+        "n": 19,
+        "top1": {
+          "value": 0.895,
+          "k": 17,
+          "n": 19,
+          "ci": [
+            0.686,
+            0.971
+          ]
+        }
+      },
+      "en": {
+        "n": 18,
+        "top1": {
+          "value": 1.0,
+          "k": 18,
+          "n": 18,
+          "ci": [
+            0.824,
+            1.0
+          ]
+        }
+      }
+    },
+    "out_of_scope": {
+      "flagged": {
+        "value": 0.9,
+        "k": 9,
+        "n": 10,
+        "ci": [
+          0.596,
+          0.982
+        ]
+      },
+      "false_flags": {
+        "value": 0.073,
+        "k": 8,
+        "n": 110,
+        "ci": [
+          0.037,
+          0.137
+        ]
+      }
+    },
+    "held_out": false
+  },
+  "caveats": [
+    "Synthetic patients follow DDXPlus symptom statistics, and real patients do not, so the synthetic numbers measure the pipeline and are not a forecast for a clinic.",
+    "Simulated patients make mistakes: 30% add one symptom they do not have, 10% of yes/no answers are flipped and 20% of follow-up questions get \"don't know\".",
+    "The written cases were written by an AI model from DDXPlus records, not by patients, so their wording is cleaner than real complaints.",
+    "In the written cases, follow-up answers come from the DDXPlus record and are truthful, and patient_confirms assumes the patient corrects every extracted symptom; extraction used the clef-flash backend.",
+    "Real-patient numbers from doctor-confirmed diagnoses are the only real-world evidence, and they are shown next to this snapshot, not mixed into it.",
+    "Samples are small for many conditions, so intervals are wide; read every number together with its ci and n."
+  ],
+  "i18n": {
+    "ru": {
+      "synthetic_source": "Синтетические пациенты DDXPlus (тестовая выборка), смоделированный диалог: 3000 пациентов",
+      "written_source": "120 письменных жалоб на русском, казахском, смешанном и английском. Этот набор использовался при настройке системы, поэтому цифры могут быть завышены",
+      "caveats": [
+        "Синтетические пациенты построены по статистике симптомов набора DDXPlus. Реальные пациенты отличаются, поэтому эти цифры проверяют работу системы, но не предсказывают точность в клинике.",
+        "Симулированные пациенты ошибаются: у 30% появляется один лишний симптом, 10% ответов «да / нет» неверны, на 20% уточняющих вопросов они отвечают «не знаю».",
+        "Письменные жалобы составила языковая модель по записям DDXPlus, а не сами пациенты, поэтому они чище настоящих сообщений.",
+        "В письменных жалобах ответы на уточняющие вопросы правдивы. Вариант «пациент проверил симптомы» предполагает, что пациент исправил все распознанные симптомы. Распознавание симптомов: clef-flash.",
+        "Единственное доказательство точности на реальных пациентах: диагнозы, подтверждённые врачами. Они показаны отдельно и не смешиваются с этими расчётами.",
+        "По многим заболеваниям случаев мало, поэтому интервалы широкие. Смотрите на каждое число вместе с интервалом и n."
+      ]
+    },
+    "kk": {
+      "synthetic_source": "DDXPlus синтетикалық пациенттері (тест жиыны), модельденген диалог: 3000 пациент",
+      "written_source": "Орыс, қазақ, аралас және ағылшын тілдеріндегі 120 жазбаша шағым. Бұл жиын жүйені баптауға қолданылған, сондықтан сандар асыра көрсетілуі мүмкін",
+      "caveats": [
+        "Синтетикалық пациенттер DDXPlus жиынының белгілер статистикасы бойынша құрастырылған. Нақты пациенттер одан өзгеше, сондықтан бұл сандар жүйенің жұмысын тексереді, бірақ емханадағы дәлдікті болжамайды.",
+        "Симуляциядағы пациенттер қателеседі: 30%-ында бір артық белгі пайда болады, «иә / жоқ» жауаптарының 10%-ы қате, нақтылау сұрақтарының 20%-ына «білмеймін» деп жауап береді.",
+        "Жазбаша шағымдарды DDXPlus жазбалары бойынша тілдік модель жазған, пациенттер емес, сондықтан олар нақты хабарламалардан тазарақ.",
+        "Жазбаша шағымдарда нақтылау сұрақтарына жауаптар шынайы. «Пациент белгілерді тексерді» нұсқасы пациент танылған белгілердің бәрін түзеткен деп есептейді. Белгілерді тану: clef-flash.",
+        "Нақты пациенттердегі дәлдіктің жалғыз дәлелі: дәрігер растаған диагноздар. Олар бөлек көрсетіледі және бұл есептерге қосылмайды.",
+        "Көптеген аурулар бойынша жағдайлар аз, сондықтан интервалдар кең. Әр санды интервалымен және n-мен бірге қараңыз."
+      ]
+    },
+    "en": {
+      "synthetic_source": "Synthetic DDXPlus test patients, simulated conversation: 3000 patients",
+      "written_source": "120 written complaints in Russian, Kazakh, mixed and English. This set was used while tuning the system, so the numbers may be optimistic",
+      "caveats": [
+        "Synthetic patients follow the symptom statistics of the DDXPlus dataset. Real patients differ, so these numbers test the system but do not predict accuracy in a clinic.",
+        "Simulated patients make mistakes: 30% mention one symptom they do not have, 10% of yes / no answers are wrong, and 20% of follow-up questions get \"don't know\".",
+        "The written complaints were written by a language model from DDXPlus records, not by patients, so they are cleaner than real messages.",
+        "In the written complaints, answers to follow-up questions are truthful. \"Patient checked the symptoms\" assumes the patient corrected every recognised symptom. Symptom recognition: clef-flash.",
+        "The only evidence from real patients is diagnoses confirmed by doctors. They are shown separately and never mixed into these figures.",
+        "Many conditions have few cases, so the intervals are wide. Read every number together with its interval and n."
+      ]
+    }
+  }
+}

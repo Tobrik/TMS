@@ -109,6 +109,9 @@ _LABEL_OVERRIDES = {
     "E_45": "Blood in the sputum (coughing up blood)",
     "E_16": "Anxiety or restlessness",
     "E_82": "Weak and dizzy, or feeling about to faint",
+    "E_14": "Chest pain even at rest (also while sitting or lying still; not pain only on exertion, deep breathing or coughing)",
+    "E_220": "Pain that gets worse on a deep breath in",
+    "E_218": "Symptoms worse with physical exertion and better with rest",
 }
 
 
@@ -245,10 +248,13 @@ def evidence_label(code: str) -> Dict[str, str]:
     base, _, value = code.partition("_@_")
     meta = EVIDENCES_META.get(base, {})
     if value:
+        from value_labels import VALUE_LABELS
+
         en, ru, kk = _FIELD_LABELS.get(base, (meta.get("question_en", base),) * 3)
         name = _PAIN_CHARACTER.get(value) if base == "E_54" else TRAVEL.get(value) if base == "E_204" else None
         name = name or meta.get("value_meaning", {}).get(value, {}).get("en", value)
-        return {"en": f"{en}: {name}", "ru": f"{ru}: {name}", "kk": f"{kk}: {name}"}
+        local = VALUE_LABELS.get(value, {}) if base in ("E_54", "E_55", "E_57", "E_204") else {}
+        return {"en": f"{en}: {name}", "ru": f"{ru}: {local.get('ru', name)}", "kk": f"{kk}: {local.get('kk', name)}"}
     q_en = meta.get("question_en", code)
     translated = _QUESTION_TRANSLATIONS.get(code, {})
     return {"en": q_en, "ru": translated.get("ru", q_en), "kk": translated.get("kk", q_en)}

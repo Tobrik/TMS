@@ -64,8 +64,10 @@ def tier_of(disease: str) -> str:
 # If ANY of these evidences are present → force that zone regardless of diagnosis.
 
 RED_FLAG_EVIDENCES = {
-    # Stridor = airway obstruction → minutes to death
-    "E_112",
+    # Stridor = airway obstruction → minutes to death. E_194 ("high-pitched noise
+    # when breathing in": laryngospasm, epiglottitis, croup, anaphylaxis). Not
+    # E_112, which is the whoop after coughing fits in whooping cough.
+    "E_194",
     # Chest pain at rest → possible ACS
     "E_14",
 }
@@ -162,7 +164,7 @@ def critical_alert(evidences: Iterable[str]) -> Optional[dict]:
     """Immediate warning shown while the patient is still answering questions."""
     ev_set = set(evidences)
     # `code` lets the frontend show the message in the patient's language
-    if "E_112" in ev_set:
+    if "E_194" in ev_set:
         return {
             "level": "red",
             "code": "stridor",
