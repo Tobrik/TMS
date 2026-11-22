@@ -6,6 +6,7 @@ posterior over diseases used by the question engine and the /analys endpoint.
 
 import json
 import logging
+import threading
 import numpy as np
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
@@ -22,18 +23,52 @@ _LABELS_PATH   = _TRAINING_DIR / "label_classes.json"
 _EVIDENCES_PATH = _TRAINING_DIR / "release_evidences.json"
 _STATS_PATH    = _TRAINING_DIR / "evidence_stats.json"
 
-# ─── Load model and metadata at import time ───
-try:
-    import joblib
-    _clf = joblib.load(_MODEL_PATH)
-    # Saved with n_jobs=-1 and verbose=1: every predict_proba spun up a thread
-    # pool (~13 ms instead of ~1 ms) and logged two lines. Run inline, quietly.
-    _clf.n_jobs = 1
-    _clf.verbose = 0
-    logger.info("sklearn model loaded from %s", _MODEL_PATH)
-except Exception as e:
-    _clf = None
-    logger.error("Failed to load sklearn model: %s", e)
+# ─── RandomForest: optional, loaded on first use ───
+# Production uses naive Bayes, which needs only numpy. The RandomForest (joblib +
+# scikit-learn) is needed for posterior "rf", the legacy "jsd" question strategy
+# and the RF comparison in eval/simulate.py. Importing this module must not import
+# scikit-learn: that was most of the serverless cold start.
+_rf = None
+_rf_state = "unloaded"          # "unloaded" -> "loaded" | "failed"
+_rf_lock = threading.Lock()
+
+
+def get_rf():
+    """The RandomForest from model.pkl, loaded once on the first call. Returns None
+    (and logs one warning) when joblib or scikit-learn is missing or the file does
+    not load."""
+    global _rf, _rf_state
+    if _rf_state != "unloaded":
+        return _rf
+    with _rf_lock:
+        if _rf_state != "unloaded":
+            return _rf
+        try:
+            import joblib
+            clf = joblib.load(_MODEL_PATH)
+            # Saved with n_jobs=-1 and verbose=1: every predict_proba spun up a thread
+            # pool (~13 ms instead of ~1 ms) and logged two lines. Run inline, quietly.
+            clf.n_jobs = 1
+            clf.verbose = 0
+            _rf = clf
+            _rf_state = "loaded"
+            logger.info("sklearn model loaded from %s", _MODEL_PATH)
+        except Exception as e:
+            _rf = None
+            _rf_state = "failed"
+            logger.warning(
+                "RandomForest unavailable (%s): posterior 'rf' and strategy 'jsd' are disabled; "
+                "install requirements-dev.txt to use them", e,
+            )
+    return _rf
+
+
+def __getattr__(name: str):
+    # Back-compat for `from ml_model import _clf` (the /healthz route): the RF loads on access.
+    if name == "_clf":
+        return get_rf()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
 
 try:
     with open(_FEATURES_PATH, encoding="utf-8") as f:
@@ -291,8 +326,11 @@ def _age_bin(age: int) -> int:
 
 
 def _rf_class_proba(evidences: Iterable[str], age: Optional[int], sex: Optional[str]) -> np.ndarray:
+    clf = get_rf()
+    if clf is None:
+        raise RuntimeError("RandomForest unavailable: install requirements-dev.txt to use posterior 'rf'")
     vec = build_feature_vector(evidences, 25 if age is None else age, sex or "M")
-    return _clf.predict_proba(vec.reshape(1, -1))[0]
+    return clf.predict_proba(vec.reshape(1, -1))[0]
 
 
 def _nb_class_proba(
@@ -464,7 +502,7 @@ def predict_top(
         List of (disease_name, probability) tuples, sorted descending.
         Falls back to [("Unknown", 0.0)] if the model data is not loaded.
     """
-    if N_FEATURES == 0 or (POSTERIOR == "rf" and _clf is None):
+    if N_FEATURES == 0 or (POSTERIOR == "rf" and get_rf() is None):
         logger.error("model not available for prediction")
         return [("Unknown", 0.0)]
 
@@ -519,11 +557,11 @@ def validate_evidences(evidences: List[str]) -> Tuple[List[str], List[str]]:
     return valid, invalid
 
 
-# ─── Disease → relevant evidences mapping ────────────────────────────────────
+# ─── Disease → relevant evidences mapping (jsd strategy only) ───────────────
 # Precomputed from RF: for each disease, the top-K binary evidences whose
 # presence causes the largest increase in P(disease).
-# Built once at import time; used to filter candidates in follow-up questions.
-_DISEASE_RELEVANT_EVIDENCES: dict = {}  # disease_name → set of evidence IDs
+# Used by the legacy "jsd" strategy to filter candidates; built on first use.
+_disease_map: Optional[dict] = None
 _RELEVANCE_TOP_K = 30  # keep top-30 evidences per disease
 
 
@@ -533,7 +571,8 @@ def _build_disease_evidence_map() -> dict:
     are most relevant (largest probability increase when feature is turned on).
     Returns: {disease_name: set(ev_id, ...)}.
     """
-    if _clf is None or N_FEATURES == 0:
+    clf = get_rf()
+    if clf is None or N_FEATURES == 0:
         return {}
 
     # Identify binary evidence features (exclude __AGE__, __SEX_M__, categorical)
@@ -547,13 +586,13 @@ def _build_disease_evidence_map() -> dict:
 
     # Base prediction on empty patient (only default age/sex)
     base_vec = build_feature_vector([], age=25, sex="M")
-    base_proba = _clf.predict_proba(base_vec.reshape(1, -1))[0]
+    base_proba = clf.predict_proba(base_vec.reshape(1, -1))[0]
 
     # Batch: one row per binary evidence with that feature set to 1
     batch = np.tile(base_vec, (len(binary_evs), 1))
     for i, ev_id in enumerate(binary_evs):
         batch[i, _feat_idx[ev_id]] = 1.0
-    probas = _clf.predict_proba(batch)  # (n_binary, n_classes)
+    probas = clf.predict_proba(batch)  # (n_binary, n_classes)
 
     # For each disease, collect (ev_id, delta_prob) and keep top-K
     result = {}
@@ -575,10 +614,17 @@ def _build_disease_evidence_map() -> dict:
     return result
 
 
-try:
-    _DISEASE_RELEVANT_EVIDENCES = _build_disease_evidence_map()
-except Exception as e:
-    logger.error("Failed to build disease→evidence map: %s", e)
+def get_disease_relevant_evidences() -> dict:
+    """disease → relevant evidence IDs, for the "jsd" strategy. Probes the RF, so it
+    is built on the first call and cached (a failure caches {})."""
+    global _disease_map
+    if _disease_map is None:
+        try:
+            _disease_map = _build_disease_evidence_map()
+        except Exception as e:
+            logger.error("Failed to build disease→evidence map: %s", e)
+            _disease_map = {}
+    return _disease_map
 
 
 # ─── Prerequisite logic for dependent evidences ─────────────────────────────
@@ -725,13 +771,15 @@ from triage import tier_of
 
 
 def make_qa_engine(strategy: str = "eig", **posterior_kwargs) -> QAEngine:
-    """Build a QAEngine; posterior_kwargs (posterior="rf"|"nb") are for evals."""
+    """Build a QAEngine; posterior_kwargs (posterior="rf"|"nb") are for evals.
+    Only the legacy "jsd" strategy uses the RandomForest, so only it loads one."""
+    jsd = strategy == "jsd"
     return QAEngine(
-        clf=_clf,
+        clf=get_rf() if jsd else None,
         feature_names=FEATURE_NAMES,
         label_classes=LABEL_CLASSES,
         evidences_meta=EVIDENCES_META,
-        disease_relevant_evidences=_DISEASE_RELEVANT_EVIDENCES,
+        disease_relevant_evidences=get_disease_relevant_evidences() if jsd else {},
         question_translations=_QUESTION_TRANSLATIONS,
         evidence_prerequisites=_EVIDENCE_PREREQUISITES,
         never_ask=_NEVER_ASK,

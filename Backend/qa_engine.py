@@ -23,7 +23,6 @@ from dataclasses import dataclass, field
 from typing import Callable, Dict, FrozenSet, Iterable, List, Optional, Set, Tuple
 
 import numpy as np
-from scipy.spatial.distance import jensenshannon
 
 logger = logging.getLogger("tms.qa_engine")
 
@@ -68,7 +67,8 @@ class QAResult:
 
 
 class QAEngine:
-    """Two-round question-selection engine on top of an existing RF classifier."""
+    """Two-round question-selection engine. The "eig" strategy needs only likelihoods
+    and features; the legacy "jsd" strategy also needs the RF classifier `clf`."""
 
     def __init__(
         self,
@@ -250,6 +250,7 @@ class QAEngine:
         """
         if not candidates:
             return []
+        from scipy.spatial.distance import jensenshannon  # legacy jsd path only
 
         # Batch: vectors with each candidate turned ON
         batch_on = np.tile(base_vec, (len(candidates), 1))
@@ -394,7 +395,8 @@ class QAEngine:
     ) -> QAResult:
         """absent = answered "no"; unknown = answered "don't know" (eig only:
         not used as evidence, only excluded from the next questions)."""
-        if self.clf is None or self._n_features == 0:
+        # eig needs only likelihoods and features; jsd also needs the RF.
+        if self._n_features == 0 or (self.strategy != "eig" and self.clf is None):
             return QAResult(
                 questions=[], should_stop=True, stop_reason="model_unavailable",
                 top3=[], confidence=0.0, round_type="none",

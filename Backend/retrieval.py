@@ -1,13 +1,20 @@
 """
-Retrieval-based symptom extraction for TMS.
+Regex symptom vocabulary and age/sex extraction for TMS.
 
-Architecture: Vocabulary mapping (boss) + BM25 (fallback for unknowns).
+_VOCAB maps Russian, Kazakh and English symptom phrases to DDXPlus evidence IDs.
+Whether a mention is a denial ("кашля нет") is decided by negation.py. The
+vocabulary is used in four places (see extraction.py):
+  - safety net: a red-flag phrase the LLM missed is added as present;
+  - denial net: a phrase the patient denies is recorded as absent;
+  - recall net: symptoms the LLM never mentioned are added as uncertain chips,
+    which the patient confirms;
+  - fallback: when no LLM is available (extraction mode "fallback").
 
-Flow: Patient text → vocabulary lookup → exact E_XX codes → RF classifier.
-No LLaMA needed for extraction. LLaMA used ONLY for explanation (frontend).
-
-The vocabulary maps Russian patient terms directly to DDXPlus evidence IDs.
-BM25 is kept as a fallback for symptoms not covered by the vocabulary.
+For that no-LLM fallback, EvidenceRetriever ranks the evidence questions with
+BM25 (rank-bm25) over the English and translated question text, and adds
+high-scoring non-antecedent binary symptoms that the vocabulary did not find.
+BM25 has no negation handling, so extraction filters its hits against the
+denials first.
 """
 
 import re
@@ -991,71 +998,6 @@ class EvidenceRetriever:
         )
         return [(ev_id, score) for ev_id, score in results[:top_k] if score > 0]
 
-    def extract_direct(
-        self,
-        text: str,
-        top_k: int = 25,
-        bm25_fallback_threshold: float = 8.0,
-        bm25_fallback_max: int = 5,
-    ) -> Tuple[List[str], Optional[int], Optional[str]]:
-        """
-        Main extraction method — vocabulary first, BM25 fallback for unknowns.
-
-        Steps:
-          1. Vocabulary lookup: precise Russian→E_XX direct mapping.
-          2. If vocabulary returns <4 evidences, add BM25 top candidates
-             (only high-confidence: score > 8.0) to fill gaps.
-          3. Extract age and sex via regex.
-
-        Returns: (evidences: List[str], age: Optional[int], sex: Optional[str])
-        """
-        age, sex = _extract_age_sex(text)
-
-        # Step 1: Vocabulary lookup (high precision)
-        vocab_evs = _vocab_extract(text)
-        matched_set: Set[str] = set(vocab_evs)
-
-        logger.info(
-            "vocab_extract: %r -> %d evidences: %s",
-            text[:60], len(vocab_evs), vocab_evs,
-        )
-
-        # Step 2: BM25 fallback — only if vocabulary found few evidences
-        if len(matched_set) < 4:
-            try:
-                candidates = self.retrieve(text, top_k=top_k)
-                if candidates:
-                    logger.info(
-                        "BM25 scores (top-10): %s",
-                        [(eid, round(s, 2)) for eid, s in candidates[:10]],
-                    )
-                added = 0
-                for ev_id, score in candidates:
-                    if score < bm25_fallback_threshold:
-                        break
-                    meta = self._meta.get(ev_id, {})
-                    # Skip: categorical, antecedent (history), already matched
-                    if meta.get("data_type", "B") != "B":
-                        continue
-                    if meta.get("is_antecedent", False):
-                        continue
-                    if ev_id in matched_set:
-                        continue
-                    matched_set.add(ev_id)
-                    added += 1
-                    if added >= bm25_fallback_max:
-                        break
-                if added:
-                    logger.info("BM25 fallback added %d high-confidence evidences", added)
-            except Exception as e:
-                logger.warning("BM25 fallback failed: %s", e)
-
-        evidences = list(matched_set)
-        logger.info(
-            "extract_direct result: %r -> %d evidences (age=%s sex=%s): %s",
-            text[:60], len(evidences), age, sex, evidences,
-        )
-        return evidences, age, sex
 
 
 # ─── Public API ────────────────────────────────────────────────────────────────

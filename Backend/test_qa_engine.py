@@ -31,8 +31,8 @@ def engine():
     except Exception as exc:
         pytest.skip(f"Cannot import ml_model (missing artefacts?): {exc}")
 
-    if ml_model._clf is None:
-        pytest.skip("RF model not loaded")
+    if ml_model.get_rf() is None:
+        pytest.skip("RF model not loaded (scikit-learn/joblib missing?)")
 
     return ml_model.make_qa_engine("jsd", posterior="rf")
 

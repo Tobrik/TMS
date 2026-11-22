@@ -12,6 +12,7 @@ load_dotenv()
 
 from fastapi import FastAPI, Depends, HTTPException, Request, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, constr, field_validator, model_validator
 from typing import Optional, List, Dict, Any, Tuple
@@ -1113,6 +1114,19 @@ def get_all_patients_triage() -> list:
             ORDER BY p.patient_id
         """)
         rows = cur.fetchall()
+
+        # v1 rows (no stored zone) are re-assessed below; their reported symptoms
+        # come from one query for all of them.
+        v1_day_ids = [r[7] for r in rows if r[7] is not None and r[8] is None]
+        symptoms_by_day: Dict[int, List[str]] = {}
+        if v1_day_ids:
+            cur.execute(
+                "SELECT day_id, symptom_code FROM diary_symptoms WHERE day_id = ANY(%s) AND value > 0",
+                (v1_day_ids,),
+            )
+            for v1_day_id, symptom_code in cur.fetchall():
+                symptoms_by_day.setdefault(v1_day_id, []).append(symptom_code)
+
         result = []
         for r in rows:
             disease = top1_name(decrypt_field(r[4]))
@@ -1127,13 +1141,7 @@ def get_all_patients_triage() -> list:
                 # v1 row: no stored zone. Re-assess from the top-1 disease and the
                 # reported symptoms (v1 stored the top-3 average as score, so it
                 # can't serve as a probability).
-                evidences = []
-                if day_id:
-                    cur.execute(
-                        "SELECT symptom_code FROM diary_symptoms WHERE day_id = %s AND value > 0",
-                        (day_id,),
-                    )
-                    evidences = [row[0] for row in cur.fetchall()]
+                evidences = symptoms_by_day.get(day_id, [])
                 zone = triage.assess({disease: 1.0} if disease else {}, evidences).zone
 
             result.append({
@@ -1228,13 +1236,21 @@ async def global_exception_handler(request: Request, exc: Exception):
     logger.error("Unhandled error on %s %s: %s", request.method, request.url.path, exc, exc_info=True)
     return JSONResponse(status_code=500, content={"detail": "Internal server error"})
 
-# CORS
-ALLOWED_ORIGINS = os.environ.get("ALLOWED_ORIGINS", "http://localhost:3000").split(",")
+# CORS: see cors_origins(). Any origin unless CORS_ALLOWED_ORIGINS is set.
+# The frontend sends a Bearer header, not cookies, so credentials stay off.
+def cors_origins() -> List[str]:
+    """CORS_ALLOWED_ORIGINS (comma-separated) restricts which sites may call the
+    API; unset or empty allows any origin. Opt-in on purpose: the older
+    ALLOWED_ORIGINS was never applied, and deployments still carry its
+    localhost default, so honouring it would block the live frontend."""
+    raw = os.environ.get("CORS_ALLOWED_ORIGINS", "")
+    origins = [o.strip() for o in raw.split(",") if o.strip()]
+    return origins or ["*"]
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], # Для хакатона лучше оставить "*", чтобы не было проблем с фронтом
-    allow_credentials=True,
+    allow_origins=cors_origins(),
+    allow_credentials=False,
     allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type"],
 )
@@ -1242,7 +1258,7 @@ app.add_middleware(
 # ─── Health Check ───
 
 @app.get("/health")
-async def health():
+def health():
     global _DB_STARTUP_ERROR
     try:
         conn = connect()
@@ -1262,18 +1278,19 @@ async def health():
         return JSONResponse(status_code=503, content={"status": "unhealthy", "database": "unreachable"})
 
 @app.get("/")
-async def root():
+def root():
     return {"message": "TMS API is running"}
 
 @app.get("/healthz")
-async def healthz():
-    from ml_model import _clf, N_FEATURES, LABEL_CLASSES, _MODEL_PATH
-    import os
-    model_file_exists = os.path.exists(_MODEL_PATH)
+def healthz():
+    """Readiness of the naive Bayes model production uses. Does not load the
+    optional RandomForest (scikit-learn is not installed in production)."""
+    from ml_model import EVIDENCE_STATS, LABEL_CLASSES, N_FEATURES, POSTERIOR
+    ready = N_FEATURES > 0 and bool(EVIDENCE_STATS.get("p_evidence_given_disease"))
     return {
-        "model_loaded": _clf is not None,
-        "model_path": str(_MODEL_PATH),
-        "model_file_exists": model_file_exists,
+        "model_loaded": ready,
+        "posterior": POSTERIOR,
+        "model_version": MODEL_VERSION,
         "n_features": N_FEATURES,
         "n_classes": len(LABEL_CLASSES),
     }
@@ -1282,7 +1299,7 @@ async def healthz():
 
 @app.post("/regist_as_patient", response_model=RegisterResponse)
 @limiter.limit("10/minute")
-async def regist_as_patient(request: Request, body: RegisterRequest):
+def regist_as_patient(request: Request, body: RegisterRequest):
     patient_id = register_as_patient(body.name, body.city, body.password)
     logger.info("Patient %d registered", patient_id)
     token = create_access_token({"role": "patient", "patient_id": patient_id})
@@ -1290,7 +1307,7 @@ async def regist_as_patient(request: Request, body: RegisterRequest):
 
 @app.post("/login_patient", response_model=LoginResponse)
 @limiter.limit("5/minute")
-async def login_patient_endpoint(request: Request, body: LoginPatientRequest):
+def login_patient_endpoint(request: Request, body: LoginPatientRequest):
     flag = log_in_patient(body.patient_id, body.password)
     if not flag:
         raise HTTPException(status_code=401, detail="Invalid credentials")
@@ -1300,7 +1317,7 @@ async def login_patient_endpoint(request: Request, body: LoginPatientRequest):
 
 @app.post("/login_doctor", response_model=DoctorLoginResponse)
 @limiter.limit("5/minute")
-async def login_doctor_endpoint(request: Request, body: LoginDoctorRequest):
+def login_doctor_endpoint(request: Request, body: LoginDoctorRequest):
     flag = log_in_doctor(body.doctor_id, body.password)
     if not flag:
         raise HTTPException(status_code=401, detail="Invalid credentials")
@@ -1311,31 +1328,33 @@ async def login_doctor_endpoint(request: Request, body: LoginDoctorRequest):
 
 @app.post("/list_doctor")
 @limiter.limit("20/minute")
-async def list_doctor_endpoint(request: Request):
+def list_doctor_endpoint(request: Request):
     docs = list_doctors_db()
     return {"doctors": docs}
 
 # ─── Patient endpoints (require patient or doctor token) ───
 
 @app.get("/conditions")
-async def conditions_endpoint(_user: dict = Depends(require_patient_or_doctor)):
+def conditions_endpoint(_user: dict = Depends(require_patient_or_doctor)):
     """The diagnoses the model can output (the names /analys returns), with triage tier."""
     return {"conditions": CONDITIONS}
 
 @app.get("/evidence_catalog")
-async def evidence_catalog_endpoint(_user: dict = Depends(require_patient_or_doctor)):
+def evidence_catalog_endpoint(_user: dict = Depends(require_patient_or_doctor)):
     """The askable binary symptoms, with labels in en / ru / kk."""
     return {"evidences": EVIDENCE_CATALOG}
 
 @app.post("/get_history")
-async def get_history_endpoint(body: HistoryRequest, user: dict = Depends(require_patient_or_doctor)):
+@limiter.limit("120/minute")
+def get_history_endpoint(request: Request, body: HistoryRequest, user: dict = Depends(require_patient_or_doctor)):
     if user.get("role") == "patient" and user.get("patient_id") != body.patient_id:
         raise HTTPException(status_code=403, detail="Access denied")
     history = get_patient_history(body.patient_id)
     return {"history": history}
 
 @app.post("/get_symptoms")
-async def get_symptoms_endpoint(body: SymptomsRequest, user: dict = Depends(require_patient_or_doctor)):
+@limiter.limit("120/minute")
+def get_symptoms_endpoint(request: Request, body: SymptomsRequest, user: dict = Depends(require_patient_or_doctor)):
     if user.get("role") == "patient" and user.get("patient_id") != body.patient_id:
         raise HTTPException(status_code=403, detail="Access denied")
     graph = get_symptom_graph(body.patient_id, body.symptom_str)
@@ -1381,7 +1400,8 @@ def _recommendation(disease: str, zone: str, review: Optional[dict]) -> str:
 
 
 @app.post("/analys")
-async def analys_endpoint(body: AnalysRequest, user: dict = Depends(require_patient)):
+@limiter.limit("30/minute")
+def analys_endpoint(request: Request, body: AnalysRequest, user: dict = Depends(require_patient)):
     patient_id = user["patient_id"]
     evidences = _clean(body.evidences, "analys")
     absent = [e for e in _clean(body.absent, "analys") if e not in set(evidences)]
@@ -1474,7 +1494,7 @@ async def extract_symptoms_endpoint(
     """
     started = time.perf_counter()
     result = (await extraction.extract_complaint(body.text)).to_dict()
-    intake_id = insert_intake(user["patient_id"], body.text, result)
+    intake_id = await run_in_threadpool(insert_intake, user["patient_id"], body.text, result)
 
     review = result.get("review") or {}
     alert = triage.critical_alert(result["evidences"])
@@ -1518,7 +1538,7 @@ async def extract_symptoms_endpoint(
 
 @app.post("/next_questions")
 @limiter.limit("30/minute")
-async def next_questions_endpoint(
+def next_questions_endpoint(
     request: Request,  # noqa: used by slowapi limiter
     body: NextQuestionsRequest,
     _user: dict = Depends(require_patient),
@@ -1648,12 +1668,12 @@ async def explain_endpoint(request: Request, body: ExplainRequest, user: dict = 
     letting a patient write the "AI clinical analysis" their doctor reads.
     """
     patient_id = user["patient_id"]
-    day = get_day_for_explanation(body.day_id, patient_id)
+    day = await run_in_threadpool(get_day_for_explanation, body.day_id, patient_id)
     if day is None:
         raise HTTPException(status_code=403, detail="Access denied")
 
     lang = _LANG_NAMES[body.lang]
-    facts, attributions = _explanation_facts(day)
+    facts, attributions = await run_in_threadpool(_explanation_facts, day)
     patient_result, doctor_result = await asyncio.gather(
         llm.chat_text(
             [{"role": "system", "content": _PATIENT_EXPLAIN_PROMPT.format(lang=lang)},
@@ -1669,7 +1689,7 @@ async def explain_endpoint(request: Request, body: ExplainRequest, user: dict = 
     fallback_patient, fallback_doctor = _FALLBACK_EXPLANATION[body.lang]
     patient_text = patient_result.data if patient_result else fallback_patient
     doctor_text = doctor_result.data if doctor_result else fallback_doctor
-    save_explanations(body.day_id, patient_id, patient_text, doctor_text)
+    await run_in_threadpool(save_explanations, body.day_id, patient_id, patient_text, doctor_text)
     plog.log_stage(
         "explain", day=body.day_id, patient=patient_id, lang=body.lang,
         patient_model=patient_result.model if patient_result else "fallback",
@@ -1684,7 +1704,8 @@ async def explain_endpoint(request: Request, body: ExplainRequest, user: dict = 
 # ─── Doctor-only endpoints ───
 
 @app.post("/update_by_doctor")
-async def update_by_doctor_endpoint(body: UpdateByDoctorRequest, user: dict = Depends(require_doctor)):
+@limiter.limit("60/minute")
+def update_by_doctor_endpoint(request: Request, body: UpdateByDoctorRequest, user: dict = Depends(require_doctor)):
     doctor_id = user.get("doctor_id")
     ok = doctor_update_day(
         body.patient_id,
@@ -1697,7 +1718,8 @@ async def update_by_doctor_endpoint(body: UpdateByDoctorRequest, user: dict = De
     return {"ok": ok}
 
 @app.post("/doctor_feedback")
-async def doctor_feedback_endpoint(body: DoctorFeedbackRequest, user: dict = Depends(require_doctor)):
+@limiter.limit("60/minute")
+def doctor_feedback_endpoint(request: Request, body: DoctorFeedbackRequest, user: dict = Depends(require_doctor)):
     """The doctor's confirmed diagnosis for a diary day, kept next to the model's answer."""
     result = insert_feedback(body.day_id, user.get("doctor_id"), body)
     if result is None:
@@ -1705,22 +1727,26 @@ async def doctor_feedback_endpoint(body: DoctorFeedbackRequest, user: dict = Dep
     return {"ok": True, **result}
 
 @app.post("/list_patients_triage")
-async def list_patients_triage_endpoint(user: dict = Depends(require_doctor)):
+@limiter.limit("120/minute")
+def list_patients_triage_endpoint(request: Request, user: dict = Depends(require_doctor)):
     patients = get_all_patients_triage()
     return {"patients": patients}
 
 @app.get("/feedback_stats")
-async def feedback_stats_endpoint(user: dict = Depends(require_doctor)):
+@limiter.limit("60/minute")
+def feedback_stats_endpoint(request: Request, user: dict = Depends(require_doctor)):
     """Real-world accuracy: doctor-confirmed diagnoses vs the model, per model version."""
     return get_feedback_stats()
 
 @app.get("/accuracy_report")
-async def accuracy_report_endpoint(user: dict = Depends(require_doctor)):
+@limiter.limit("60/minute")
+def accuracy_report_endpoint(request: Request, user: dict = Depends(require_doctor)):
     """Offline benchmark snapshot (eval/accuracy_report.json) plus live real_patients numbers."""
     return get_accuracy_report()
 
 @app.post("/get_patient_info")
-async def get_patient_info_endpoint(body: PatientInfoRequest, user: dict = Depends(require_patient_or_doctor)):
+@limiter.limit("120/minute")
+def get_patient_info_endpoint(request: Request, body: PatientInfoRequest, user: dict = Depends(require_patient_or_doctor)):
     if user.get("role") == "patient" and user.get("patient_id") != body.patient_id:
         raise HTTPException(status_code=403, detail="Access denied")
     info = select_patient(body.patient_id)
@@ -1729,7 +1755,8 @@ async def get_patient_info_endpoint(body: PatientInfoRequest, user: dict = Depen
     return {"found": True, "patient": info}
 
 @app.post("/get_day_symptoms")
-async def get_day_symptoms_endpoint(body: DaySymptomsRequest, user: dict = Depends(require_patient_or_doctor)):
+@limiter.limit("120/minute")
+def get_day_symptoms_endpoint(request: Request, body: DaySymptomsRequest, user: dict = Depends(require_patient_or_doctor)):
     if user.get("role") == "patient":
         if not day_belongs_to_patient(body.day_id, user["patient_id"]):
             raise HTTPException(status_code=403, detail="Access denied")
@@ -1754,8 +1781,26 @@ async def get_day_symptoms_endpoint(body: DaySymptomsRequest, user: dict = Depen
 ALLOWED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/webp"}
 MAX_IMAGE_SIZE = 10 * 1024 * 1024  # 10 MB
 
+def save_lab_result(patient_id: int, test_type: str, test_date: str, results: list,
+                    interpretation: str, image_filename: str) -> int:
+    conn = connect()
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            INSERT INTO lab_results(patient_id, test_type, test_date, results_json, interpretation, image_filename)
+            VALUES (%s, %s, %s, %s, %s, %s) RETURNING result_id
+        """, (patient_id, test_type, test_date, encrypt_field(json.dumps(results, ensure_ascii=False)), encrypt_field(interpretation), image_filename))
+        result_id = cur.fetchone()[0]
+        conn.commit()
+        return result_id
+    finally:
+        conn.close()
+
+
 @app.post("/upload_lab_result")
+@limiter.limit("5/minute")
 async def upload_lab_result_endpoint(
+    request: Request,  # noqa: used by slowapi limiter
     image: UploadFile = File(...),
     user: dict = Depends(require_patient),
 ):
@@ -1764,11 +1809,12 @@ async def upload_lab_result_endpoint(
     if image.content_type not in ALLOWED_IMAGE_TYPES:
         raise HTTPException(status_code=400, detail="Unsupported file type. Use JPG, PNG, or WebP.")
 
-    raw_bytes = await image.read()
+    # Read one byte past the limit: enough to reject, without buffering a huge upload.
+    raw_bytes = await image.read(MAX_IMAGE_SIZE + 1)
     if len(raw_bytes) > MAX_IMAGE_SIZE:
         raise HTTPException(status_code=400, detail="File too large (max 10 MB)")
 
-    image_bytes = blur_pii_region(raw_bytes)
+    image_bytes = await run_in_threadpool(blur_pii_region, raw_bytes)
 
     image_b64 = base64.b64encode(image_bytes).decode("utf-8")
     mime = image.content_type
@@ -1820,17 +1866,9 @@ async def upload_lab_result_endpoint(
         for item in (parsed.get("results") or []) if isinstance(item, dict)
     ]
 
-    conn = connect()
-    try:
-        cur = conn.cursor()
-        cur.execute("""
-            INSERT INTO lab_results(patient_id, test_type, test_date, results_json, interpretation, image_filename)
-            VALUES (%s, %s, %s, %s, %s, %s) RETURNING result_id
-        """, (patient_id, test_type, test_date, encrypt_field(json.dumps(results, ensure_ascii=False)), encrypt_field(interpretation), safe_filename))
-        result_id = cur.fetchone()[0]
-        conn.commit()
-    finally:
-        conn.close()
+    result_id = await run_in_threadpool(
+        save_lab_result, patient_id, test_type, test_date, results, interpretation, safe_filename,
+    )
 
     return {
         "result_id": result_id,
@@ -1842,7 +1880,8 @@ async def upload_lab_result_endpoint(
 
 
 @app.post("/get_lab_results")
-async def get_lab_results_endpoint(body: GetLabResultsRequest = None, user: dict = Depends(require_patient_or_doctor)):
+@limiter.limit("120/minute")
+def get_lab_results_endpoint(request: Request, body: GetLabResultsRequest = None, user: dict = Depends(require_patient_or_doctor)):
     if user.get("role") == "patient":
         patient_id = user["patient_id"]
     else:

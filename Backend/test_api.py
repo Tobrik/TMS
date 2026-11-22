@@ -3,6 +3,7 @@ End-to-end API test on a throwaway PostgreSQL (pip install pgserver) with a fake
 Groq: register → extract → questions → analyse → explain → history → doctor.
 """
 
+import asyncio
 import importlib
 import json
 import os
@@ -10,6 +11,8 @@ import sys
 from pathlib import Path
 
 import pytest
+from fastapi import HTTPException
+from starlette.requests import Request
 
 pgserver = pytest.importorskip("pgserver")
 
@@ -38,6 +41,9 @@ def api(tmp_path_factory):
         "JWT_SECRET_KEY": "test-secret",
         "DOCTOR_SEEDS": "Dr Test|Терапевт|Doctor123",
     })
+    # CORS tests assume the unset default (any origin). Empty, not popped: load_dotenv()
+    # would otherwise fill in the value from Backend/.env when the module is imported.
+    os.environ["CORS_ALLOWED_ORIGINS"] = ""
     module = importlib.import_module("backend TMS")  # creates tables, seeds the doctor
     module.limiter.enabled = False  # the tests register more patients than 10/minute
     from fastapi.testclient import TestClient
@@ -624,3 +630,93 @@ def test_accuracy_report_endpoint_real_patients_and_missing_file(api, fake_groq,
     body = resp.json()
     assert body["report_missing"] is True and body["real_patients"]["n"] == 1
     assert set(body) == {"report_missing", "real_patients"}
+
+
+# ─── Wave 3: upload size guard, v1 triage in one query, CORS ───
+
+class _FakeUpload:
+    """Stands in for UploadFile: records how many bytes each read() asked for."""
+    content_type = "image/png"
+    filename = "big.png"
+
+    def __init__(self, size):
+        self.size = size
+        self.requested = []
+
+    async def read(self, size=-1):
+        self.requested.append(size)
+        return b"\x00" * (self.size if size < 0 else min(size, self.size))
+
+
+def test_oversized_lab_upload_is_rejected_after_one_byte_over_the_limit(api):
+    client, module = api
+    _, headers = register(client, "BigUpload")
+    resp = client.post("/upload_lab_result", headers=headers,
+                       files={"image": ("big.png", b"\x00" * (module.MAX_IMAGE_SIZE + 1), "image/png")})
+    assert resp.status_code == 400, resp.text
+    assert resp.json()["detail"] == "File too large (max 10 MB)"
+
+    fake = _FakeUpload(size=50 * module.MAX_IMAGE_SIZE)
+    request = Request({"type": "http", "method": "POST", "path": "/upload_lab_result",
+                       "headers": [], "query_string": b""})
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(module.upload_lab_result_endpoint(request=request, image=fake, user={"patient_id": 1}))
+    assert exc.value.status_code == 400
+    assert fake.requested == [module.MAX_IMAGE_SIZE + 1]  # never asked for more than the limit + 1
+
+
+def _insert_v1_day(module, patient_id, disease, symptoms):
+    """A v1 diary day: no stored zone, symptoms as {code: value}."""
+    conn = module.connect()
+    try:
+        cur = conn.cursor()
+        cur.execute("INSERT INTO diary_days(patient_id, disease_predict, score, zone) "
+                    "VALUES (%s, %s, %s, NULL) RETURNING day_id",
+                    (patient_id, module.encrypt_field(disease), 0.3))
+        day_id = cur.fetchone()[0]
+        for code, value in symptoms.items():
+            cur.execute("INSERT INTO diary_symptoms(day_id, symptom_code, value) VALUES (%s, %s, %s)",
+                        (day_id, code, value))
+        conn.commit()
+        return day_id
+    finally:
+        conn.close()
+
+
+def test_v1_triage_zones_match_per_patient_assessment(api):
+    client, module = api
+    doc = doctor_headers(client)
+    cases = {
+        "Chest": ("Possible NSTEMI / STEMI", {"E_201": 1, "E_97": 0}),
+        "Fever": ("Influenza", {"E_91": 1, "E_201": 1}),
+        "Quiet": ("Influenza", {"E_181": 0}),
+        "Empty": (None, {}),
+    }
+    ids, expected = {}, {}
+    for name, (disease, symptoms) in cases.items():
+        ids[name], _ = register(client, name)
+        _insert_v1_day(module, ids[name], disease, symptoms)
+        evidences = [code for code, value in symptoms.items() if value > 0]
+        expected[name] = module.triage.assess({disease: 1.0} if disease else {}, evidences).zone
+
+    triaged = {p["patient_id"]: p for p in client.post("/list_patients_triage", headers=doc).json()["patients"]}
+    for name in cases:
+        assert triaged[ids[name]]["zone"] == expected[name], name
+    assert expected["Chest"] == "red"  # NSTEMI/STEMI is a red-zone diagnosis
+
+
+def test_cors_allows_any_origin_without_credentials_by_default(api, monkeypatch):
+    client, module = api
+    resp = client.options("/analys", headers={
+        "Origin": "https://example.com",
+        "Access-Control-Request-Method": "POST",
+        "Access-Control-Request-Headers": "authorization,content-type",
+    })
+    assert resp.status_code == 200, resp.text
+    assert resp.headers["access-control-allow-origin"] == "*"
+    assert "access-control-allow-credentials" not in resp.headers
+
+    monkeypatch.setenv("CORS_ALLOWED_ORIGINS", " https://a.example ,, https://b.example ")
+    assert module.cors_origins() == ["https://a.example", "https://b.example"]
+    monkeypatch.setenv("CORS_ALLOWED_ORIGINS", " , ")
+    assert module.cors_origins() == ["*"]

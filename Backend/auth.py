@@ -1,3 +1,4 @@
+import logging
 import os
 import datetime
 import secrets
@@ -8,7 +9,15 @@ load_dotenv()
 from fastapi import Depends, HTTPException, status, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
-SECRET_KEY = os.environ.get("JWT_SECRET_KEY", secrets.token_hex(32))
+logger = logging.getLogger("tms.auth")
+
+_configured_key = os.environ.get("JWT_SECRET_KEY", "")
+if not _configured_key:
+    logger.error(
+        "JWT_SECRET_KEY is not set: using a random key for this process. Tokens will not "
+        "survive a restart and will not verify on other serverless instances. Set JWT_SECRET_KEY."
+    )
+SECRET_KEY = _configured_key or secrets.token_hex(32)
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = int(os.environ.get("JWT_EXPIRE_MINUTES", "120"))
 
@@ -16,7 +25,7 @@ security = HTTPBearer()
 
 
 def create_access_token(subject: dict) -> str:
-    expire = datetime.datetime.utcnow() + datetime.timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    expire = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     payload = {**subject, "exp": expire, "jti": secrets.token_hex(16)}
     return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
 

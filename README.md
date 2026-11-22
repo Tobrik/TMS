@@ -69,18 +69,27 @@ Free-tier limits decide how much can be evaluated (and served) per day: Cloudfla
 # Backend
 cd Backend
 cp .env.example .env            # fill in DATABASE_URL, JWT_SECRET_KEY, DB_ENCRYPTION_KEY, GROQ_API_KEY
-pip install -r requirements.txt  # Python ≥ 3.10 (scikit-learn 1.8 / NumPy 2)
+pip install -r requirements.txt  # Python ≥ 3.10; production needs only NumPy, no scikit-learn / SciPy
 uvicorn main:app --reload
 
 # Frontend (NEXT_PUBLIC_API_URL defaults to http://localhost:8000; no LLM key needed)
 cd frontend && npm install && npm run dev
 ```
 
+### Deployment notes
+
+- Production (Vercel) runs naive Bayes on NumPy only. The RandomForest (`training sklearn/model.pkl`) and the legacy "jsd" question strategy load scikit-learn / SciPy lazily, only in evals; `import ml_model` takes ~0.02 s and ~27 MB instead of ~0.45 s and ~270 MB.
+- Endpoints without LLM calls are plain `def` (FastAPI's thread pool), so database queries and password hashing don't block other requests; the three LLM endpoints stay async and push their database work to the thread pool. Every endpoint that reads the database or calls an LLM is rate-limited per IP.
+- `CORS_ALLOWED_ORIGINS` (comma-separated) restricts which sites may call the API; empty allows any. The older `ALLOWED_ORIGINS` is ignored on purpose.
+- `LLM_TEXT_MODELS=openai/gpt-oss-120b,openai/gpt-oss-20b` gives Groq a second model with its own daily quota before extraction falls back to regex + BM25.
+- If the database is unreachable the app still starts; `/health` answers 503 with `"database": "unreachable"`.
+- CI (`.github/workflows/ci.yml`) runs the backend tests and the frontend type check and build on every push.
+
 ## Tests and evaluation
 
 ```bash
 cd Backend
-pip install -r requirements-dev.txt
+pip install -r requirements-dev.txt   # adds pytest, pgserver, and scikit-learn / SciPy for the RandomForest comparison in eval/
 pytest                          # unit tests + end-to-end API test on a throwaway Postgres (pgserver), fake Groq
 
 # Offline simulation (download DDXPlus from https://figshare.com/articles/dataset/DDXPlus_Dataset/20043374)
