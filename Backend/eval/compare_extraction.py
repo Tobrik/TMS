@@ -8,13 +8,25 @@ Backends:
   groq        extraction.extract — gpt-oss on Groq (GROQ_API_KEY)
   clef-flash  extraction_clef.extract — Cloudflare Clef-flash (CF_ACCOUNT_ID, CF_API_TOKEN)
   clef        the same with the 27B Clef
+  <base>+net  the cached <base> results after extraction.apply_denial_net (rule-based
+              denials from negation.py). Never calls an API, even without --score-only.
+              Reads the base cache of the same --tag: groq+net with --tag v3 reads
+              results/groq-v3.jsonl and is shown as groq-v3+net.
 
-Results are cached per backend in eval/results/<backend>.jsonl: a rerun only calls
-the API for cases not done yet, so free quotas are never spent twice. A backend
-stops at its first failure (usually a used-up daily quota); rerun later to resume.
+Results are cached per backend in eval/results/<backend>.jsonl (or <backend>-<tag>.jsonl
+with --tag): a rerun only calls the API for cases not done yet, so free quotas are never
+spent twice. A backend stops at its first failure (usually a used-up daily quota); rerun
+later to resume.
+
+Flags:
+  --tag NAME       separate cache and column (<backend>-NAME), e.g. to compare prompt versions
+  --no-review      extraction.extract(..., with_review=False): no safety-review call, review
+                   cells show "—". Groq only (extraction_clef has no review switch).
+  --only-denials   only cases whose gold labels include an explicit denial (non-empty absent)
 
 Usage (from Backend/):
     python eval/compare_extraction.py --backends regex,groq,clef-flash [--limit 10] [--errors]
+    python eval/compare_extraction.py --backends groq,groq+net --tag v3 --no-review --score-only
 
 Case format (one JSON object per line):
   text, lang, present / absent      gold codes the text states / explicitly denies
@@ -42,6 +54,7 @@ import extraction  # noqa: E402
 import llm  # noqa: E402
 import ml_model as m  # noqa: E402
 import triage  # noqa: E402
+from extraction import Finding  # noqa: E402
 
 HERE = Path(__file__).resolve().parent
 RESULTS = HERE / "results"
@@ -49,10 +62,31 @@ RESULTS = HERE / "results"
 # $ per million tokens (input, output), 2026-10
 PRICES = {"groq": (0.15, 0.60), "clef-flash": (0.038, 0.0), "clef": (0.24, 0.0)}
 
+NET_SUFFIX = "+net"
+LOCAL_BACKENDS = ("gold", "regex")  # computed without any API, so cached locally on demand
+
+
+def cache_name(backend: str, tag: str = "") -> str:
+    return f"{backend}-{tag}" if tag else backend
+
+
+def split_net(name: str):
+    """'groq-v3+net' -> ('groq-v3', True); 'groq' -> ('groq', False)."""
+    return (name[:-len(NET_SUFFIX)], True) if name.endswith(NET_SUFFIX) else (name, False)
+
+
+def price_key(name: str) -> str:
+    """Price table key for a cache name such as 'clef-flash-v3+net'."""
+    base = split_net(name)[0]
+    for key in sorted(PRICES, key=len, reverse=True):
+        if base == key or base.startswith(key + "-"):
+            return key
+    return ""
+
 
 # ─── Running a backend ───────────────────────────────────────────────────────
 
-async def run_case(backend: str, case: dict) -> dict:
+async def run_case(backend: str, case: dict, no_review: bool = False) -> dict:
     started = time.perf_counter()
     if backend == "gold":
         review = {"out_of_scope": case["out_of_scope"], "likely_condition": case.get("likely_condition")}
@@ -63,7 +97,7 @@ async def run_case(backend: str, case: dict) -> dict:
         if backend == "regex":
             ext = extraction._fallback(case["text"])
         elif backend == "groq":
-            ext = await extraction.extract(case["text"])
+            ext = await extraction.extract(case["text"], with_review=not no_review)
         else:
             import extraction_clef
             ext = await extraction_clef.extract(case["text"], model=backend)
@@ -86,27 +120,43 @@ def rederive(record: dict, case: dict) -> dict:
             "uncertain": ext.codes("uncertain"), "sex": ext.sex, "review": ext.review}
 
 
-def load_cached(backend: str) -> Dict[str, dict]:
-    path = RESULTS / f"{backend}.jsonl"
+def load_cached(name: str) -> Dict[str, dict]:
+    """Cached records of one cache name (a backend, optionally with its --tag). No API calls."""
+    path = RESULTS / f"{name}.jsonl"
     if not path.exists():
         return {}
     return {r["id"]: r for r in map(json.loads, path.read_text(encoding="utf-8").splitlines()) if r}
 
 
-async def run_backend(backend: str, cases: List[dict], fresh: bool, pause: float) -> Dict[str, dict]:
+def apply_net(record: dict, case: dict) -> dict:
+    """Cached base result after the rule-based denial net. Rebuilds the Finding objects
+    from the saved present/absent/uncertain lists, so no API is called."""
+    findings = ([Finding(c, "present") for c in record["present"]]
+                + [Finding(c, "absent") for c in record["absent"]]
+                + [Finding(c, "uncertain") for c in record["uncertain"]])
+    findings = extraction.apply_denial_net(findings, case["text"])
+    return {**record,
+            "present": [f.code for f in findings if f.status == "present"],
+            "absent": [f.code for f in findings if f.status == "absent"],
+            "uncertain": [f.code for f in findings if f.status == "uncertain"]}
+
+
+async def run_backend(backend: str, cases: List[dict], fresh: bool, pause: float,
+                      tag: str = "", no_review: bool = False) -> Dict[str, dict]:
     RESULTS.mkdir(exist_ok=True)
-    path = RESULTS / f"{backend}.jsonl"
-    cached = {} if fresh else load_cached(backend)
+    name = cache_name(backend, tag)
+    path = RESULTS / f"{name}.jsonl"
+    cached = {} if fresh else load_cached(name)
     if fresh and path.exists():
         path.unlink()
     todo = [c for c in cases if c["id"] not in cached]
     if todo:
-        print(f"  {backend}: running {len(todo)} case(s), {len(cached)} cached", flush=True)
+        print(f"  {name}: running {len(todo)} case(s), {len(cached)} cached", flush=True)
     for i, case in enumerate(todo):
         try:
-            record = await run_case(backend, case)
+            record = await run_case(backend, case, no_review)
         except Exception as e:
-            print(f"  {backend}: stopped at {case['id']} — {e}. Rerun later to resume.", flush=True)
+            print(f"  {name}: stopped at {case['id']} — {e}. Rerun later to resume.", flush=True)
             break
         cached[case["id"]] = record
         with path.open("a", encoding="utf-8") as f:
@@ -253,7 +303,7 @@ def score(backend: str, cases: List[dict], results: Dict[str, dict], show_errors
     reviewed = any("emergency" in (results[c["id"]].get("review") or {}) for c in done)
     review_cell = (lambda hit, total: f"{hit}/{total}") if reviewed else (lambda hit, total: "—")
     precision, recall = _ratio(s["tp"], s["tp"] + s["fp"]), _ratio(s["tp"], s["tp"] + s["fn"])
-    price_in, price_out = PRICES.get(backend, (0.0, 0.0))
+    price_in, price_out = PRICES.get(price_key(backend), (0.0, 0.0))
     return {
         "backend": backend, "cases": n,
         "precision": precision, "recall": recall,
@@ -337,6 +387,11 @@ async def main() -> None:
                     help="also score each backend after the patient's confirmation step (see confirmed())")
     ap.add_argument("--all-cases", action="store_true",
                     help="score each backend on every case it finished (default: only cases all backends finished)")
+    ap.add_argument("--tag", default="", help="cache and column suffix: <backend>-<tag>")
+    ap.add_argument("--no-review", action="store_true",
+                    help="skip the safety-review call (groq); review cells show —")
+    ap.add_argument("--only-denials", action="store_true",
+                    help="only cases whose gold labels include an explicit denial")
     args = ap.parse_args()
 
     # Ride out Groq's per-minute token limit instead of falling back to another model
@@ -345,18 +400,34 @@ async def main() -> None:
     llm.TEXT_MODELS[:] = llm.TEXT_MODELS[:1]
 
     cases = [json.loads(line) for line in Path(args.cases).read_text(encoding="utf-8").splitlines() if line.strip()]
+    if args.only_denials:
+        cases = [c for c in cases if c["absent"]]
     if args.limit:
         cases = cases[:args.limit]
+    by_id = {c["id"]: c for c in cases}
 
     backends = [b.strip() for b in args.backends.split(",") if b.strip()]
-    results = {
-        b: (load_cached(b) if args.score_only and b != "gold" else await run_backend(b, cases, args.fresh, args.pause))
-        for b in backends
-    }
-    by_id = {c["id"]: c for c in cases}
+    results: Dict[str, Dict[str, dict]] = {}  # display name -> {case id: record}
     for b in backends:
-        if b.startswith("clef"):
-            results[b] = {i: rederive(r, by_id[i]) for i, r in results[b].items() if i in by_id}
+        base, is_net = split_net(b)
+        display = cache_name(base, args.tag) + (NET_SUFFIX if is_net else "")
+        if is_net:
+            # Never an API call: the base comes from its cache (or runs locally for gold/regex)
+            if base in LOCAL_BACKENDS:
+                base_results = await run_backend(base, cases, False, 0.0, args.tag)
+            else:
+                base_results = load_cached(cache_name(base, args.tag))
+            if base.startswith("clef"):
+                base_results = {i: rederive(r, by_id[i]) for i, r in base_results.items() if i in by_id}
+            results[display] = {i: apply_net(r, by_id[i]) for i, r in base_results.items() if i in by_id}
+        else:
+            if args.score_only and base != "gold":
+                found = load_cached(display)
+            else:
+                found = await run_backend(base, cases, args.fresh, args.pause, args.tag, args.no_review)
+            if base.startswith("clef"):
+                found = {i: rederive(r, by_id[i]) for i, r in found.items() if i in by_id}
+            results[display] = found
 
     # A fair comparison scores every backend on the same cases
     if not args.all_cases:
@@ -366,16 +437,15 @@ async def main() -> None:
         cases = [c for c in cases if c["id"] in common]
 
     scores = []
-    for backend in backends:
+    for name in results:
         if args.errors:
-            print(f"\n  {backend} misses:")
-        scored = score(backend, cases, results[backend], args.errors)
+            print(f"\n  {name} misses:")
+        scored = score(name, cases, results[name], args.errors)
         if scored:
             scores.append(scored)
-        if args.confirm and backend not in ("gold",):
-            by_id = {c["id"]: c for c in cases}
-            fixed = {i: confirmed(r, by_id[i]) for i, r in results[backend].items() if i in by_id}
-            scored = score(f"{backend}+confirm", cases, fixed, False)
+        if args.confirm and name != "gold":
+            fixed = {i: confirmed(r, by_id[i]) for i, r in results[name].items() if i in by_id}
+            scored = score(f"{name}+confirm", cases, fixed, False)
             if scored:
                 scores.append(scored)
     if scores:

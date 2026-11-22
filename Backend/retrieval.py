@@ -16,6 +16,8 @@ import logging
 from pathlib import Path
 from typing import List, Tuple, Dict, Optional, Set
 
+import negation
+
 logger = logging.getLogger("tms")
 
 _BASE = Path(__file__).parent
@@ -737,6 +739,82 @@ _VOCAB: List[Tuple[str, List[str]]] = [
      ["E_201", "E_112"]),
     (r"лающий\s+каш\w+|круп|каш\w+\s+(?:как\s+)?лай",
      ["E_201", "E_112"]),
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # ── Added for denial detection (negation.py): KK/EN gaps and denial forms ─
+    # A match here counts as present unless negation.is_negated says it is denied.
+    # Denial forms (appetite is fine, pain-free) map to the code and come out absent.
+    # ══════════════════════════════════════════════════════════════════════════
+
+    # ── Fever (KK, EN) ────────────────────────────────────────────────────────
+    (r"қызу\w*|қызб\w*|температура\w*",
+     ["E_91"]),   # fever (KK: қызу, қызба; "қызуым жоқ")
+    (r"(?<!\w)temperature|(?<!\w)temp(?!\w)",
+     ["E_91"]),   # fever (EN bare "temperature"; "no temperature")
+
+    # ── Pain, generic (KK, EN) — the code is pain itself ──────────────────────
+    (r"(?<!\w)ауыр(?:ад|ып|ам|ат|ма|ғ|ды|ді)\w*",
+     ["E_53"]),   # KK "ауырады", "ауырып", "ауырмайды" (negated by suffix)
+    (r"(?<!\w)(?:pain|pains|painful|hurts?|hurting|aches?|aching|sore)(?!\w)",
+     ["E_53"]),   # EN generic pain ("no pain", "pain-free" not matched)
+
+    # ── Constant tiredness → E_89 (DDXPlus: constantly fatigued / non-restful sleep)
+    (r"(?:үнемі|әрдайым|әрқашан)\s+(?:шарша\w*|шаршап\w*|әлсіз\w*)",
+     ["E_89"]),   # KK
+    (r"(?:constantly|constant(?:ly)?|always|all\s+the\s+time)\s+(?:tired|fatigued|exhausted)|constant\s+fatigue",
+     ["E_89"]),   # EN
+
+    # ── Appetite → E_161 (loss of appetite). Denial forms are absent. ─────────
+    (r"тәбетім\s+жоқ|тәбетім\s+жоғ\w*|тәбет\w*\s+(?:жоғал\w*|төмен|нашар)",
+     ["E_161"]),  # KK loss of appetite
+    (r"тәбет\w*\s+(?:жақсы|қалыпты)",
+     ["E_161"]),  # KK "тәбетім жақсы" = no loss (absent via span)
+    (r"(?:poor|bad|low)\s+appetite|appetite\s+(?:is\s+|has\s+been\s+)?(?:poor|bad|low|gone|lost)",
+     ["E_161"]),  # EN loss of appetite
+    (r"appetite\s+(?:is\s+|has\s+been\s+|seems\s+)?(?:fine|good|normal|great|ok|okay)",
+     ["E_161"]),  # EN "my appetite is fine" = no loss (absent via span)
+    (r"аппетит\w*\s+(?:в\s+норме|нормальн\w*|хорош\w*)",
+     ["E_161"]),  # RU denial form (absent via span)
+    (r"аппетит\w*\s+(?:нет|пропал\w*|плох\w*|снижен\w*)|аппетита\s+нет",
+     ["E_161"]),  # RU loss of appetite, reversed word order
+
+    # ── Trouble swallowing → E_65 ─────────────────────────────────────────────
+    (r"жұта\s+алмай\w*|жұта\s+алма\w*|жұт\w*\s+қиын",
+     ["E_65"]),   # KK ("жұта алмаймын" = cannot swallow, a symptom)
+    (r"can(?:'?t|not)\s+swallow|trouble\s+swallowing",
+     ["E_65"]),   # EN incl. "cannot swallow"
+
+    # ── Breathing (RU, EN) ───────────────────────────────────────────────────
+    (r"не\s+могу\s+дышать|не\s+хватает\s+воздуха|не\s+хватает\s+дыхани",
+     ["E_66"]),   # RU "не могу дышать" is a symptom, not a denial
+    (r"can(?:'?t|not)\s+breathe",
+     ["E_66"]),   # EN "cannot breathe"
+
+    # ── Coughing blood → E_45 (KK) ───────────────────────────────────────────
+    (r"қанды\s+(?:қақырық|жөтел)\w*|қақырық\w*.{0,20}(?<!\w)қан(?:ым|ы|ды|дан)?(?!\w)"
+     r"|жөтел\w*.{0,20}(?<!\w)қан(?:ым|ы|ды|дан)?(?!\w)",
+     ["E_45"]),
+
+    # ── Fainting → E_159 (KK; RU and EN already have it) ─────────────────────
+    (r"есінен\s+тан\w*|естен\s+тан\w*|талып\s+қал\w*|сана\w*\s+жоғал\w*|санам\s+жоғал\w*",
+     ["E_159"]),
+
+    # ── Palpitations, sorted by language ─────────────────────────────────────
+    (r"жүргенде\s+(?:күшейе\w*|нашарлай\w*|ауырлай\w*)",
+     ["E_218"]),  # KK worse with exertion
+    (r"(?:жүргенде|жүгіргенде|күш\s+салғанда|жүктеме\w*\s+кезінде|жұмыс\s+істегенде)\s*(?:\S+\s+){0,3}?(?:күшейе\w*|нашарлай\w*|ауырлай\w*)",
+     ["E_218"]),
+    (r"worse\s+(?:when|after|during)\s+(?:i\s+)?(?:walk\w*|exercis\w*|climb\w*|run\w*|activit\w*|exert\w*)|(?:walking|exercis\w*|climbing|exertion|activity)\s+(?:makes?\s+(?:it\s+)?)?worse",
+     ["E_218"]),  # EN worse with exertion
+
+    # ── Worse at night → E_219 (KK, EN) ──────────────────────────────────────
+    (r"түнде\s+(?:күшейе\w*|нашарлай\w*|ауырлай\w*)",
+     ["E_219"]),  # KK
+    (r"worse\s+(?:at|in|during|every)\s+(?:the\s+)?night|worst\s+at\s+night|night\w*\s+(?:is\s+)?worse",
+     ["E_219"]),  # EN
+
+    # ── Chest pain / sore throat / cough / nose / vomiting / SOB / sweat ─────
+    # Already in the vocabulary above for KK and EN; nothing new needed.
 ]
 
 # ─── BM25 synonym expansion (for fallback BM25 only) ─────────────────────────
@@ -844,55 +922,19 @@ def _extract_age_sex(text: str) -> Tuple[Optional[int], Optional[str]]:
     return age, sex
 
 
-_NEGATION_BEFORE_RE = re.compile(
-    r"(?:^|[\s,;.!?])(?:не\s+|нет\s+|без\s+|отсутств\w+\s+|никак\w+\s+|ни\s+|жоқ\s+|емес\s+)",
-    re.MULTILINE,
-)
-_NEGATION_AFTER_RE = re.compile(
-    r"^\w*\s+(?:нет|отсутствует|не\s+было|не\s+беспокоит|жоқ|емес)\b"
-)
-
-
 def _is_negated(text: str, match_start: int, match_end: int = 0) -> bool:
-    """
-    Check if the match is negated — looks both backward and forward.
-    Backward: "не кашляю", "без температуры"
-    Forward:  "кашля нет", "жөтел жоқ"
-    """
-    # Backward check (up to 15 chars before match)
-    window_start = max(0, match_start - 15)
-    window_before = text[window_start:match_start]
-    if _NEGATION_BEFORE_RE.search(window_before):
-        return True
-
-    # Forward check (up to 25 chars after match end)
-    if match_end > 0:
-        window_after = text[match_end:match_end + 25]
-        if _NEGATION_AFTER_RE.search(window_after):
-            return True
-
-    return False
+    """Denial check for one mention; the rules live in negation.is_negated."""
+    return negation.is_negated(text, match_start, match_end or match_start)
 
 
 def _vocab_extract(text: str) -> List[str]:
     """
-    Direct vocabulary lookup: scan patient text for symptom terms,
-    return the corresponding DDXPlus evidence IDs.
-    High precision — only returns IDs when pattern clearly matches.
-    Uses finditer to check ALL occurrences: if at least one is not negated,
-    the symptom is present.  E.g. "кашля нет, но вчера кашлял" → cough present.
+    Direct vocabulary lookup: scan patient text for symptom terms and return the
+    evidence IDs that are present. Denials ("кашля нет", "жөтел жоқ", "no fever")
+    are decided by negation.vocab_findings, so they never come back as present.
+    High precision: a pattern counts only if one of its matches is not denied.
     """
-    text_lower = text.lower()
-    matched: Set[str] = set()
-    _flags = re.DOTALL | re.MULTILINE
-
-    for pattern, ev_ids in _VOCAB:
-        for m in re.finditer(pattern, text_lower, _flags):
-            if not _is_negated(text_lower, m.start(), m.end()):
-                matched.update(ev_ids)
-                break  # one non-negated hit is enough for this pattern
-
-    return list(matched)
+    return [code for code, verdict in negation.vocab_findings(text).items() if verdict == "present"]
 
 
 # ─── BM25 retriever (fallback for unknown symptoms) ──────────────────────────

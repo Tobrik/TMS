@@ -10,6 +10,8 @@ Pipeline (all calls run concurrently):
      "uncertain" (shown to the patient to confirm).
   4. Safety net: red-flag symptoms caught by the regex vocabulary are added even
      if the LLM missed them, unless the LLM grounded a denial.
+  4b. Denial net (negation.py): symptoms the text denies ("кашля нет", "жөтел
+     жоқ", "no fever") that the extractor left undecided are added as absent.
   5. Reviewer call (more reasoning): emergency? outside the 49 conditions?
      It can only escalate triage, never lower it.
 Without an LLM (no key, or every model failed) falls back to v1 regex + BM25.
@@ -90,11 +92,31 @@ COMMON_LOCATIONS = {v: name for v, name in BODY_LOCATIONS.items()
 TRAVEL = {v: ("no travel" if v == "V_10" else name) for v, name in _values("E_204").items()}
 
 
+# Glosses that DDXPlus's English gets wrong (checked against the French
+# originals, question_fr). Used only in the extraction prompt's catalog.
+_LABEL_OVERRIDES = {
+    "E_202": "Barking cough, like a seal (croup) — NOT whooping cough",
+    "E_112": "Whooping: noisy high-pitched breath IN after coughing fits",
+    "E_194": "High-pitched noise when breathing in (stridor)",
+    "E_214": "Wheezing / whistling when breathing out",
+    "E_32": "A baby or small child eating or drinking (feeding) less",
+    "E_161": "Loss of appetite or getting full quickly",
+    "E_64": "Easily out of breath on exertion",
+    "E_66": "Shortness of breath or significant difficulty breathing",
+    "E_88": "Unable to do usual activities, or in bed all day",
+    "E_89": "Constant tiredness or unrefreshing sleep",
+    "E_166": "Vomiting after coughing fits",
+    "E_45": "Blood in the sputum (coughing up blood)",
+    "E_16": "Anxiety or restlessness",
+    "E_82": "Weak and dizzy, or feeling about to faint",
+}
+
+
 def _catalog() -> str:
     lines = ["## Symptoms and history (code: what it means)"]
     for code in BINARY_CODES:
         tag = " [history]" if EVIDENCES_META[code].get("is_antecedent") else ""
-        lines.append(f"{code}{tag}: {short_label(code)}")
+        lines.append(f"{code}{tag}: {_LABEL_OVERRIDES.get(code) or short_label(code)}")
     lines.append("\n## Body locations (pain.locations / pain.radiates_to; R/L = right/left)")
     lines.append("; ".join(f"{v} {name}" for v, name in COMMON_LOCATIONS.items()))
     lines.append("\n## Pain character (pain.character)")
@@ -161,12 +183,17 @@ Map the complaint to the codes listed below. Return JSON matching the schema; no
 
 Rules:
 1. Every finding needs `quote`: the exact words from the patient's text that support it, copied verbatim in the original language (no translation, no paraphrase). If you cannot quote it, leave it out.
-2. status "present": the patient reports it. "absent": the patient explicitly denies it ("нет температуры", "жөтел жоқ", "no fever"). "uncertain": hedged ("кажется", "возможно", "мүмкін", "maybe").
-3. Code only what is said or unmistakably implied ("не встаю с кровати" → bedridden). Never add symptoms from general knowledge of a disease.
-4. Pain: if the patient has pain, add code E_53 as present AND fill `pain` (locations, radiation, character, intensity 0-10, onset_speed 0-10 where 10 = sudden) with what is stated; leave unstated parts empty/null. pain = null if no pain is mentioned.
-5. Never code chest pain at rest (E_14) or radiation to the arm/jaw without an explicit statement. Anxiety alone is not cardiac.
-6. One vomiting episode is E_148; E_211 only for repeated vomiting.
-7. travel: only if travel abroad (or its absence) is mentioned. age/sex: only if stated (мужчина/ер адам/man → M, женщина/әйел/woman → F), else null.
+2. status "present": the patient reports it. "uncertain": hedged ("кажется", "возможно", "вроде", "мүмкін", "сияқты", "maybe", "I think").
+3. status "absent": report EVERY symptom the patient denies or calls normal. Denials matter as much as complaints: the diagnosis uses them. Forms: "нет температуры", "без температуры", "температуры нету", "не кашляю", "горло не болит", "глотать не трудно", "аппетит нормальный", "с дыханием всё в порядке", "жөтел жоқ", "қызуым көтерілген жоқ", "тамағым ауырмайды" (Kazakh negative verb suffix -ма/-ме/-ба/-бе/-па/-пе), "тәбетім жақсы", "сөйлеуім қалыпты", "no fever", "I don't have a cough", "my appetite is fine". "Не могу дышать" / "can't breathe" is a symptom (present), not a denial.
+4. Code only what is said or unmistakably implied ("не встаю с кровати" → bedridden). Never add symptoms from general knowledge of a disease. Close codes: fever/temperature (температура, жар, қызу) = E_91, chills/shivering (озноб, знобит, қалтырау, тоңу) = E_94; appetite = E_161 (E_32 only for a baby feeding less); tiredness = E_89 (E_88 only if it stops usual activities or keeps them in bed); breathlessness = E_66 (E_64 only "breathless on exertion"); palpitations = E_155 (E_164 only "very irregular / chaotic"); whooping after coughing fits = E_112, barking cough = E_202.
+5. Pain: if the patient has pain, add code E_53 as present AND fill `pain` (locations, radiation, character, intensity 0-10, onset_speed 0-10 where 10 = sudden) with what is stated; leave unstated parts empty/null. pain = null if no pain is mentioned.
+6. Never code chest pain at rest (E_14) or radiation to the arm/jaw without an explicit statement. Anxiety alone is not cardiac.
+7. One vomiting episode is E_148; E_211 only for repeated vomiting.
+8. travel: only if travel abroad (or its absence) is mentioned. age/sex: only if stated (мужчина/ер адам/man → M, женщина/әйел/woman → F), else null. If someone writes about another person (child, parent), code that person's symptoms, age and sex.
+
+Examples (findings only):
+"Третий день температура 38, кашляю. Насморка нет, горло не болит." → E_91 present "температура 38"; E_201 present "кашляю"; E_181 absent "Насморка нет"; E_97 absent "горло не болит".
+"Қалтырап жатырмын, жөтел жоқ, тәбетім жақсы" → E_94 present "Қалтырап жатырмын"; E_201 absent "жөтел жоқ"; E_161 absent "тәбетім жақсы".
 
 """ + _catalog()
 
@@ -367,10 +394,13 @@ def _majority(values: List, default=None):
 def _fallback(text: str) -> Extraction:
     from retrieval import extract_age_sex, get_retriever, vocab_extract
 
+    from negation import vocab_findings
+
     findings = [Finding(ev, "present", source="regex") for ev in vocab_extract(text)]
+    denied = {code for code, status in vocab_findings(text).items() if status == "absent"}
     try:
         retriever = get_retriever()
-        known = {f.code for f in findings}
+        known = {f.code for f in findings} | denied  # BM25 has no negation: "температуры нет" matches fever
         added = 0
         for ev_id, score in retriever.retrieve(text, top_k=20):
             if score < 6.0 or added >= 8:
@@ -383,7 +413,8 @@ def _fallback(text: str) -> Extraction:
         logger.warning("BM25 fallback failed: %s", e)
     age, sex = extract_age_sex(text)
     valid, _ = validate_evidences([f.code for f in findings])
-    return Extraction([f for f in findings if f.code in set(valid)], age, sex, mode="fallback")
+    kept = apply_denial_net([f for f in findings if f.code in set(valid)], text)
+    return Extraction(kept, age, sex, mode="fallback")
 
 
 # ─── Public API ──────────────────────────────────────────────────────────────
@@ -398,6 +429,30 @@ def apply_safety_net(findings: List[Finding], text: str) -> List[Finding]:
         if status_of.get(ev) not in ("present", "absent"):
             findings = [f for f in findings if f.code != ev]
             findings.append(Finding(ev, "present", source="safety_net"))
+    return findings
+
+
+# The denial net only denies binary symptoms. Never pain (E_53) or a pain
+# location: "горло не болит" must not mean "no pain anywhere" for a patient
+# whose other pain the vocabulary did not recognise.
+DENIABLE_CODES = frozenset(
+    c for c in BINARY_CODES if not EVIDENCES_META[c].get("is_antecedent") and c != "E_53"
+)
+
+
+def apply_denial_net(findings: List[Finding], text: str) -> List[Finding]:
+    """Add denials the rule-based negation detector finds in `text` ("кашля нет",
+    "жөтел жоқ", "no fever") for codes the extractor left undecided. A code the
+    extractor marked present or absent is kept as is; an "uncertain" one becomes
+    absent only if the text denies it."""
+    from negation import vocab_findings
+
+    status_of = {f.code: f.status for f in findings}
+    for code, status in sorted(vocab_findings(text).items()):
+        if status != "absent" or code not in DENIABLE_CODES or status_of.get(code) in ("present", "absent"):
+            continue
+        findings = [f for f in findings if f.code != code]
+        findings.append(Finding(code, "absent", source="negation"))
     return findings
 
 
@@ -436,19 +491,26 @@ async def extract_complaint(text: str) -> Extraction:
 
         result = await extraction_clef.extract(text)
         if result.mode == "clef":
+            result.findings = apply_denial_net(result.findings, text)
             return result
         logger.warning("extract: Clef unavailable, falling back to Groq")
     return await extract(text)
 
 
-async def extract(text: str) -> Extraction:
+async def _no_review() -> None:
+    return None
+
+
+async def extract(text: str, with_review: bool = True) -> Extraction:
+    """with_review=False skips the safety-review call (offline extraction evals
+    on a tight token quota); the result's review is then None."""
     messages = [{"role": "system", "content": EXTRACTION_PROMPT}, {"role": "user", "content": text}]
     calls = [
         llm.chat_json(messages, EXTRACTION_SCHEMA, name="extract", reasoning="low", temperature=0.6)
         for _ in range(max(EXTRACTION_SAMPLES, 1))
     ]
     usage = {"input_tokens": 0, "output_tokens": 0}
-    *results, safety_review = await asyncio.gather(*calls, review(text, usage))
+    *results, safety_review = await asyncio.gather(*calls, review(text, usage) if with_review else _no_review())
     for r in results:
         if r is not None:
             usage["input_tokens"] += r.input_tokens
@@ -462,7 +524,7 @@ async def extract(text: str) -> Extraction:
         logger.info("extract: fallback mode, %d findings", len(extraction.findings))
         return extraction
 
-    findings = apply_safety_net(_vote(samples, text), text)
+    findings = apply_denial_net(apply_safety_net(_vote(samples, text), text), text)
 
     from retrieval import extract_age_sex
     regex_age, regex_sex = extract_age_sex(text)

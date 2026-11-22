@@ -342,6 +342,7 @@ class QAEngine:
         sex: Optional[str],
         round_num: int,
         n_questions: int,
+        unknown: Iterable[str] = (),
     ) -> QAResult:
         posterior = self.posterior_fn(evidences, absent, age, sex)
         pooled = self.pool_fn(posterior)
@@ -353,7 +354,8 @@ class QAEngine:
         if confidence >= STOP_CONFIDENCE:
             return QAResult([], True, "high_confidence", top3, confidence, "none")
 
-        candidates = self._base_candidates(set(evidences), asked=set(absent))
+        # "Don't know" answers carry no evidence but must not be asked again
+        candidates = self._base_candidates(set(evidences), asked=set(absent) | set(unknown))
         scored = [(ev, s) for ev, s in self._score_eig(candidates, posterior) if s >= MIN_EIG]
         if not scored:
             return QAResult([], True, "no_candidates", top3, confidence, "eig")
@@ -384,7 +386,10 @@ class QAEngine:
         round_num: int = 1,
         n_questions: int = 3,
         absent: Iterable[str] = (),
+        unknown: Iterable[str] = (),
     ) -> QAResult:
+        """absent = answered "no"; unknown = answered "don't know" (eig only:
+        not used as evidence, only excluded from the next questions)."""
         if self.clf is None or self._n_features == 0:
             return QAResult(
                 questions=[], should_stop=True, stop_reason="model_unavailable",
@@ -393,7 +398,7 @@ class QAEngine:
 
         if self.strategy == "eig":
             return self._get_questions_eig(
-                list(evidences), list(absent), age, sex, round_num, n_questions,
+                list(evidences), list(absent), age, sex, round_num, n_questions, unknown=list(unknown),
             )
 
         age = 25 if age is None else age

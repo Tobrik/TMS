@@ -3,6 +3,7 @@ import json
 import asyncio
 import base64
 import logging
+import time
 import uuid
 import io
 from dotenv import load_dotenv
@@ -12,8 +13,8 @@ load_dotenv()
 from fastapi import FastAPI, Depends, HTTPException, Request, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field, constr, field_validator
-from typing import Optional, List, Dict, Any
+from pydantic import BaseModel, Field, constr, field_validator, model_validator
+from typing import Optional, List, Dict, Any, Tuple
 import re
 import psycopg2, psycopg2.extras, hashlib, secrets
 try:
@@ -31,11 +32,14 @@ from auth import (
 )
 from crypto_utils import encrypt_field, decrypt_field
 from ml_model import (
-    LABEL_CLASSES, explain_prediction, predict_distribution, qa_engine, validate_evidences,
+    EVIDENCES_META, LABEL_CLASSES, _GEO_EXCLUDED, _GROUP_MAP, _NEVER_ASK, _feat_idx,
+    evidence_fit, explain_prediction, predict_distribution, qa_engine, validate_evidences,
 )
 import extraction
 import llm
+import pipeline_log as plog
 import triage
+import qa_engine as qa_engine_module
 
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
@@ -108,6 +112,7 @@ class SymptomsRequest(BaseModel):
 class AnalysRequest(BaseModel):
     evidences: List[str] = Field(..., min_length=1, max_length=300)
     absent: List[str] = Field(default_factory=list, max_length=300)  # explicitly denied
+    unknown: List[str] = Field(default_factory=list, max_length=300)  # "don't know": stored, not used by the model
     age: Optional[int] = Field(default=None, ge=0, le=120)          # None = not stated
     sex: Optional[str] = Field(default=None, pattern="^[MF]$")
     intake_id: Optional[int] = Field(default=None, gt=0)            # from /extract_symptoms
@@ -117,8 +122,10 @@ class ExtractSymptomsRequest(BaseModel):
     text: str = Field(..., min_length=3, max_length=2000)
 
 class NextQuestionsRequest(BaseModel):
+    intake_id: Optional[int] = Field(default=None, gt=0)            # only to tie log lines together
     evidences: List[str] = Field(..., min_length=1, max_length=300)
     absent: List[str] = Field(default_factory=list, max_length=300)
+    unknown: List[str] = Field(default_factory=list, max_length=300)  # "don't know": never asked again
     age: Optional[int] = Field(default=None, ge=0, le=120)
     sex: Optional[str] = Field(default=None, pattern="^[MF]$")
     n: int = Field(default=3, ge=1, le=5)
@@ -156,9 +163,34 @@ class LabResultResponse(BaseModel):
     interpretation: str
 
 class GetLabResultsRequest(BaseModel):
-    patient_id: int = Field(..., gt=0)
+    # Patients send {} and get their own results; doctors must send patient_id.
+    patient_id: Optional[int] = Field(default=None, gt=0)
+
+class DoctorFeedbackRequest(BaseModel):
+    day_id: int = Field(..., gt=0)
+    diagnosis: str = Field(..., min_length=1, max_length=200)  # a /conditions name or "other"
+    other_text: Optional[str] = Field(default=None, max_length=200)
+    zone: str = Field(..., pattern="^(red|yellow|green)$")
+    note: Optional[str] = Field(default=None, max_length=1000)
+
+    @field_validator("diagnosis")
+    @classmethod
+    def known_diagnosis(cls, v: str) -> str:
+        if v != "other" and v not in _CONDITION_NAMES:
+            raise ValueError("diagnosis must be one of /conditions or 'other'")
+        return v
+
+    @model_validator(mode="after")
+    def other_needs_text(self):
+        if self.diagnosis == "other" and not (self.other_text or "").strip():
+            raise ValueError("other_text is required when diagnosis is 'other'")
+        return self
 
 # ─── Data & Config ───
+
+# Bump when the model or its output changes; stored with every analysis so
+# doctor feedback can be split by model version.
+MODEL_VERSION = "v2.1-nb"
 
 # model_dict removed — predictions now use sklearn RandomForest via ml_model.py
 
@@ -318,6 +350,28 @@ disease_doctors = {
     "Whooping cough": "Инфекционист / Педиатр",
 }
 
+# Canonical names predict_distribution can return: LABEL_CLASSES pooled into
+# clinical groups, minus the geo-excluded classes (see ml_model.pool_classes).
+_CONDITION_NAMES = frozenset(
+    _GROUP_MAP.get(d, d) for d in LABEL_CLASSES
+) - _GEO_EXCLUDED
+
+CONDITIONS = sorted(
+    [{"name": n, "label_ru": disease_labels.get(n, n), "tier": triage.tier_of(n)} for n in _CONDITION_NAMES],
+    key=lambda c: c["label_ru"],
+)
+
+# The askable symptoms: binary, in the model's features, never asked as a follow-up.
+_ASKABLE_CODES = [
+    code for code, meta in EVIDENCES_META.items()
+    if meta.get("data_type") == "B" and not meta.get("is_antecedent")
+    and code in _feat_idx and code not in _NEVER_ASK
+]
+EVIDENCE_CATALOG = sorted(
+    [{"code": code, "label": extraction.evidence_label(code)} for code in _ASKABLE_CODES],
+    key=lambda e: e["label"]["ru"],
+)
+
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
 
 symptom_list =[
@@ -444,6 +498,23 @@ def create_tables():
         CREATE INDEX IF NOT EXISTS idx_sym_code     ON diary_symptoms(symptom_code);
         CREATE INDEX IF NOT EXISTS idx_lab_patient  ON lab_results(patient_id);
         CREATE INDEX IF NOT EXISTS idx_intake_patient ON intakes(patient_id);
+
+        -- Doctor-confirmed diagnosis per diary day. Append-only: the latest row counts.
+        CREATE TABLE IF NOT EXISTS diagnosis_feedback (
+            feedback_id SERIAL PRIMARY KEY,
+            day_id INTEGER NOT NULL REFERENCES diary_days(day_id) ON DELETE CASCADE,
+            doctor_id INTEGER REFERENCES doctors(doctor_id) ON DELETE SET NULL,
+            created_at TIMESTAMP DEFAULT NOW(),
+            diagnosis TEXT NOT NULL,
+            other_text TEXT,          -- encrypt_field()
+            zone TEXT NOT NULL,
+            note TEXT,                -- encrypt_field()
+            model_top1 TEXT,          -- diary_days.disease_predict at feedback time
+            model_top3 TEXT,          -- JSON list of names from analysis_json["top3"]
+            model_zone TEXT,          -- diary_days.zone at feedback time
+            model_version TEXT        -- analysis_json["model_version"] or "v2.0"
+        );
+        CREATE INDEX IF NOT EXISTS idx_feedback_day ON diagnosis_feedback(day_id, feedback_id);
         """)
         conn.commit()
     finally:
@@ -770,9 +841,20 @@ def get_patient_history(patient_id: int, limit: int = 30) -> List[Dict[str, Any]
                 doc.full_name,
                 d.patient_explanation,
                 d.doctor_explanation,
-                d.zone
+                d.zone,
+                fb.diagnosis,
+                fb.other_text,
+                fb.zone,
+                fb.created_at
             FROM diary_days d
             LEFT JOIN doctors doc ON doc.doctor_id = d.doctor_id
+            LEFT JOIN LATERAL (
+                SELECT f.diagnosis, f.other_text, f.zone, f.created_at
+                FROM diagnosis_feedback f
+                WHERE f.day_id = d.day_id
+                ORDER BY f.feedback_id DESC
+                LIMIT 1
+            ) fb ON TRUE
             WHERE d.patient_id = %s
             ORDER BY d.day_id DESC
             LIMIT %s
@@ -791,9 +873,129 @@ def get_patient_history(patient_id: int, limit: int = 30) -> List[Dict[str, Any]
             "patient_explanation": decrypt_field(r[8]),
             "doctor_explanation": decrypt_field(r[9]),
             "zone": r[10],
+            "feedback": _feedback_view(r[11], r[12], r[13], r[14]) if r[11] is not None else None,
         } for r in rows]
     finally:
         conn.close()
+
+
+def _feedback_view(diagnosis: str, other_text: Optional[str], zone: str, created_at) -> Dict[str, Any]:
+    return {
+        "diagnosis": diagnosis,
+        "label_ru": None if diagnosis == "other" else disease_labels.get(diagnosis, diagnosis),
+        "other_text": decrypt_field(other_text),
+        "zone": zone,
+        "created_at": created_at.isoformat() if created_at else None,
+    }
+
+
+def insert_feedback(day_id: int, doctor_id: int, body: "DoctorFeedbackRequest") -> Optional[Dict[str, Any]]:
+    """Append a doctor's diagnosis for a diary day. The model's answer is copied
+    from the day row so later changes to the model don't rewrite history.
+    None if the day does not exist."""
+    conn = connect()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT disease_predict, zone, analysis_json FROM diary_days WHERE day_id = %s", (day_id,))
+        row = cur.fetchone()
+        if row is None:
+            return None
+        model_top1 = top1_name(decrypt_field(row[0])) or None
+        analysis = json.loads(decrypt_field(row[2]) or "{}") if row[2] else {}
+        model_top3 = [name for name, _ in (analysis.get("top3") or [])]
+        model_version = analysis.get("model_version", "v2.0")
+        cur.execute("""
+            INSERT INTO diagnosis_feedback(
+                day_id, doctor_id, diagnosis, other_text, zone, note,
+                model_top1, model_top3, model_zone, model_version
+            ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING feedback_id
+        """, (
+            day_id, doctor_id, body.diagnosis,
+            encrypt_field(body.other_text.strip()) if body.diagnosis == "other" else None,
+            body.zone, encrypt_field(body.note),
+            model_top1, json.dumps(model_top3, ensure_ascii=False), row[1], model_version,
+        ))
+        feedback_id = cur.fetchone()[0]
+        conn.commit()
+        return {
+            "feedback_id": feedback_id,
+            "agrees_top1": body.diagnosis != "other" and body.diagnosis == model_top1,
+            "in_top3": body.diagnosis != "other" and body.diagnosis in model_top3,
+        }
+    finally:
+        conn.close()
+
+_ZONES = ("red", "yellow", "green")
+_ZONE_RANK = {"green": 0, "yellow": 1, "red": 2}
+
+
+def get_feedback_stats() -> Dict[str, Any]:
+    """Accuracy of the model against doctor-confirmed diagnoses (latest row per day)."""
+    conn = connect()
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT DISTINCT ON (day_id) day_id, diagnosis, zone, model_top1, model_top3, model_zone, model_version
+            FROM diagnosis_feedback
+            ORDER BY day_id, feedback_id DESC
+        """)
+        rows = cur.fetchall()
+    finally:
+        conn.close()
+    return feedback_stats_from_rows(rows)
+
+
+def feedback_stats_from_rows(rows) -> Dict[str, Any]:
+    """rows: (day_id, diagnosis, zone, model_top1, model_top3 JSON, model_zone, model_version),
+    one per diary day. Pure function so the arithmetic can be tested without a database."""
+    zone_matrix = {d: {m: 0 for m in _ZONES} for d in _ZONES}
+    versions: Dict[str, Dict[str, int]] = {}
+    confusions: Dict[tuple, int] = {}
+    n = 0
+
+    for _day, diagnosis, doctor_zone, model_top1, model_top3, model_zone, model_version in rows:
+        n += 1
+        other = diagnosis == "other"
+        top3 = json.loads(model_top3) if model_top3 else []
+        v = versions.setdefault(model_version or "v2.0", {
+            "n": 0, "other": 0, "top1": 0, "top3": 0, "zone_n": 0, "zone_exact": 0, "under": 0, "over": 0})
+        v["n"] += 1
+        v["other"] += other
+
+        if not other:
+            v["top1"] += diagnosis == model_top1
+            v["top3"] += diagnosis in top3
+            if model_top1 and model_top1 != diagnosis:
+                key = (model_top1, diagnosis)
+                confusions[key] = confusions.get(key, 0) + 1
+
+        if doctor_zone in _ZONE_RANK and model_zone in _ZONE_RANK:
+            v["zone_n"] += 1
+            v["zone_exact"] += doctor_zone == model_zone
+            v["under"] += _ZONE_RANK[model_zone] < _ZONE_RANK[doctor_zone]
+            v["over"] += _ZONE_RANK[model_zone] > _ZONE_RANK[doctor_zone]
+            zone_matrix[doctor_zone][model_zone] += 1
+
+    def ratio(part: int, whole: int) -> float:
+        return round(part / whole, 3) if whole else 0.0
+
+    by_version = {
+        name: {
+            "n": v["n"], "other": v["other"],
+            "top1": ratio(v["top1"], v["n"]), "top3": ratio(v["top3"], v["n"]),
+            "zone_exact": ratio(v["zone_exact"], v["zone_n"]),
+            "under_triage": v["under"], "over_triage": v["over"],
+        }
+        for name, v in sorted(versions.items())
+    }
+    top_confusions = sorted(confusions.items(), key=lambda kv: (-kv[1], kv[0]))[:10]
+    return {
+        "n": n,
+        "by_version": by_version,
+        "zone_matrix": zone_matrix,
+        "confusions": [{"model": m, "doctor": d, "count": c} for (m, d), c in top_confusions],
+    }
+
 
 def get_symptom_graph(patient_id: int, symptom_code: str) -> List[Dict[str, Any]]:
     if symptom_code not in symptom_list:
@@ -825,7 +1027,8 @@ def get_all_patients_triage() -> list:
         cur.execute("""
             SELECT p.patient_id, p.full_name, p.city, p.created_at,
                    d.disease_predict, d.score, d.created_at as diag_date,
-                   d.day_id, d.zone
+                   d.day_id, d.zone,
+                   EXISTS (SELECT 1 FROM diagnosis_feedback f WHERE f.day_id = d.day_id) AS has_feedback
             FROM patients p
             LEFT JOIN diary_days d ON d.day_id = (
                 SELECT MAX(d2.day_id) FROM diary_days d2 WHERE d2.patient_id = p.patient_id
@@ -840,7 +1043,10 @@ def get_all_patients_triage() -> list:
             day_id = r[7]
             zone = r[8]
 
-            if zone is None:
+            if day_id is None:
+                # No diary day at all: nothing to triage yet.
+                zone = None
+            elif zone is None:
                 # v1 row: no stored zone. Re-assess from the top-1 disease and the
                 # reported symptoms (v1 stored the top-3 average as score, so it
                 # can't serve as a probability).
@@ -862,6 +1068,8 @@ def get_all_patients_triage() -> list:
                 "last_score": score,
                 "diag_date": str(r[6]) if r[6] else None,
                 "zone": zone,
+                "last_day_id": day_id,
+                "feedback_pending": day_id is not None and not r[9],
             })
         return result
     finally:
@@ -1017,6 +1225,16 @@ async def list_doctor_endpoint(request: Request):
 
 # ─── Patient endpoints (require patient or doctor token) ───
 
+@app.get("/conditions")
+async def conditions_endpoint(_user: dict = Depends(require_patient_or_doctor)):
+    """The diagnoses the model can output (the names /analys returns), with triage tier."""
+    return {"conditions": CONDITIONS}
+
+@app.get("/evidence_catalog")
+async def evidence_catalog_endpoint(_user: dict = Depends(require_patient_or_doctor)):
+    """The askable binary symptoms, with labels in en / ru / kk."""
+    return {"evidences": EVIDENCE_CATALOG}
+
 @app.post("/get_history")
 async def get_history_endpoint(body: HistoryRequest, user: dict = Depends(require_patient_or_doctor)):
     if user.get("role") == "patient" and user.get("patient_id") != body.patient_id:
@@ -1038,6 +1256,26 @@ def _clean(evidences: List[str], where: str) -> List[str]:
     return valid
 
 
+def _review_summary(review: Optional[dict]) -> dict:
+    """Safety review for the logs. available=False means the review call failed
+    (e.g. rate-limited), so no out-of-scope / emergency signal reached triage."""
+    if not review:
+        return {"available": False}
+    summary = {
+        "available": True,
+        "model": review.get("model"),
+        "emergency": review.get("emergency"),
+        "verified": review.get("emergency_verified"),
+        "out_of_scope": review.get("out_of_scope"),
+        "likely_condition": review.get("likely_condition"),
+    }
+    if review.get("emergency_probability") is not None:
+        summary["emergency_probability"] = review["emergency_probability"]
+    if plog.patient_text_allowed():
+        summary["reason"] = review.get("reason")  # LLM's summary of the complaint
+    return summary
+
+
 def _recommendation(disease: str, zone: str, review: Optional[dict]) -> str:
     text = disease_recommendations.get(disease, "Консультация врача обязательна.")
     if review and review.get("out_of_scope"):
@@ -1055,6 +1293,7 @@ async def analys_endpoint(body: AnalysRequest, user: dict = Depends(require_pati
     patient_id = user["patient_id"]
     evidences = _clean(body.evidences, "analys")
     absent = [e for e in _clean(body.absent, "analys") if e not in set(evidences)]
+    unknown = [e for e in _clean(body.unknown, "analys") if e not in set(evidences)]
     if not evidences:
         raise HTTPException(status_code=422, detail="No valid evidences")
 
@@ -1065,9 +1304,13 @@ async def analys_endpoint(body: AnalysRequest, user: dict = Depends(require_pati
             raise HTTPException(status_code=403, detail="Access denied")
         review = intake["result"].get("review")
 
-    distribution = predict_distribution(evidences, body.age, body.sex, absent)
+    notes: List[str] = []
+    distribution = predict_distribution(evidences, body.age, body.sex, absent, notes=notes)
     top3 = list(distribution.items())[:3]
     top1, top1_score = top3[0]
+    # Below the question engine's stop threshold the top-1 is much less reliable
+    # (63.6% vs 95.0% top-1 in eval/simulate.py with realistic answer noise).
+    low_confidence = top1_score < qa_engine_module.STOP_CONFIDENCE
     assessed = triage.assess(distribution, evidences, review)
     out_of_scope = bool(review and review.get("out_of_scope"))
     likely_condition = review.get("likely_condition") if out_of_scope else None
@@ -1089,8 +1332,21 @@ async def analys_endpoint(body: AnalysRequest, user: dict = Depends(require_pati
             "sex": body.sex,
             "out_of_scope": out_of_scope,
             "likely_condition": likely_condition,
+            "unknown": unknown,  # "don't know" answers: not evidence, kept for analysis
+            "model_version": MODEL_VERSION,
+            "low_confidence": low_confidence,
         },
         intake_id=body.intake_id,
+    )
+    plog.log_stage(
+        "analysis", intake=body.intake_id, day=day, patient=patient_id,
+        present=plog.labelled(evidences), absent=plog.labelled(absent), unknown=plog.labelled(unknown),
+        age=body.age, sex=body.sex,
+        top=plog.top(distribution), zone=assessed.zone, reasons=assessed.reasons, low_confidence=low_confidence,
+        red_mass=round(assessed.red_mass, 3), yellow_mass=round(assessed.yellow_mass, 3),
+        review=_review_summary(review), adjustments=notes,
+        # P(answer | disease) for the top 3: at the 0.03 floor = never seen with that disease
+        fit=evidence_fit(evidences, [name for name, _ in top3]),
     )
 
     return {
@@ -1104,6 +1360,7 @@ async def analys_endpoint(body: AnalysRequest, user: dict = Depends(require_pati
             for name, sc in top3
         ],
         "score": top1_score,
+        "low_confidence": low_confidence,
         "zone": assessed.zone,
         "reasons": assessed.reasons,
         "out_of_scope": {"likely_condition": likely_condition} if out_of_scope else None,
@@ -1123,6 +1380,7 @@ async def extract_symptoms_endpoint(
     extraction.extract_complaint. Stores an intake (text, findings, safety
     review) that /analys reads by intake_id.
     """
+    started = time.perf_counter()
     result = (await extraction.extract_complaint(body.text)).to_dict()
     intake_id = insert_intake(user["patient_id"], body.text, result)
 
@@ -1131,9 +1389,26 @@ async def extract_symptoms_endpoint(
     if alert is None and review.get("emergency"):
         alert = {
             "level": "red" if review.get("emergency_verified") else "yellow",
+            "code": "llm_emergency",
             "message": "⚠️ Ваше описание похоже на неотложное состояние. "
                        "Если вам становится хуже — немедленно вызовите скорую помощь (103).",
         }
+
+    with_text = plog.patient_text_allowed()
+    plog.log_stage(
+        "extract", intake=intake_id, patient=user["patient_id"], lang=plog.detect_language(body.text),
+        chars=len(body.text), backend=result["mode"], model=result["model"],
+        ms=round((time.perf_counter() - started) * 1000), tokens=result["usage"],
+        findings=[
+            {"code": f["code"], "label": plog.label(f["code"]), "status": f["status"], "source": f["source"],
+             **({"confidence": f["confidence"]} if f.get("confidence") is not None else {}),
+             **({"quote": f["quote"]} if with_text and f.get("quote") else {})}
+            for f in result["findings"]
+        ],
+        age=result["age"], sex=result["sex"], review=_review_summary(result.get("review")),
+        alert=alert["level"] if alert else None,
+        **({"text": body.text} if with_text else {}),
+    )
 
     return {
         "intake_id": intake_id,
@@ -1163,6 +1438,7 @@ async def next_questions_endpoint(
     """
     evidences = _clean(body.evidences, "next_questions")
     absent = [e for e in _clean(body.absent, "next_questions") if e not in set(evidences)]
+    unknown = [e for e in _clean(body.unknown, "next_questions") if e not in set(evidences)]
     if not evidences:
         raise HTTPException(status_code=422, detail="No valid evidences")
 
@@ -1173,8 +1449,19 @@ async def next_questions_endpoint(
         round_num=body.round_num,
         n_questions=body.n,
         absent=absent,
+        unknown=unknown,
     )
     distribution = predict_distribution(evidences, body.age, body.sex, absent)
+    zone = triage.assess(distribution, evidences).zone
+    plog.log_stage(
+        "questions", intake=body.intake_id, round=body.round_num,
+        present=plog.labelled(evidences), absent=plog.labelled(absent), unknown=plog.labelled(unknown),
+        age=body.age, sex=body.sex,
+        top=plog.top(distribution), confidence=round(result.confidence, 3),
+        stop=result.stop_reason if result.should_stop else None,
+        asked=[[q.evidence_id, plog.label(q.evidence_id), round(q.score, 3)] for q in result.questions],
+        zone=zone,
+    )
 
     return {
         "questions": [
@@ -1192,7 +1479,7 @@ async def next_questions_endpoint(
             {"disease": name, "label": disease_labels.get(name, name), "score": round(sc, 3)}
             for name, sc in result.top3
         ],
-        "zone": triage.assess(distribution, evidences).zone,
+        "zone": zone,
         "critical_alert": triage.critical_alert(evidences),
         "should_stop": result.should_stop,
         "stop_reason": result.stop_reason,
@@ -1228,7 +1515,7 @@ Rules:
 - End with one line stating this is decision support, not a diagnosis. 8-15 sentences total."""
 
 
-def _explanation_facts(day: Dict[str, Any]) -> str:
+def _explanation_facts(day: Dict[str, Any]) -> Tuple[str, Dict[str, list]]:
     analysis = day["analysis"]
     top3 = analysis.get("top3") or []
     attributions = explain_prediction(
@@ -1255,7 +1542,7 @@ def _explanation_facts(day: Dict[str, Any]) -> str:
     if analysis.get("out_of_scope"):
         lines.append("Safety reviewer: the complaint may be outside the model's 49 conditions"
                      + (f"; most likely {analysis.get('likely_condition')}" if analysis.get("likely_condition") else ""))
-    return "\n".join(lines)
+    return "\n".join(lines), attributions
 
 
 @app.post("/explain")
@@ -1274,7 +1561,7 @@ async def explain_endpoint(request: Request, body: ExplainRequest, user: dict = 
         raise HTTPException(status_code=403, detail="Access denied")
 
     lang = _LANG_NAMES[body.lang]
-    facts = _explanation_facts(day)
+    facts, attributions = _explanation_facts(day)
     patient_result, doctor_result = await asyncio.gather(
         llm.chat_text(
             [{"role": "system", "content": _PATIENT_EXPLAIN_PROMPT.format(lang=lang)},
@@ -1291,6 +1578,15 @@ async def explain_endpoint(request: Request, body: ExplainRequest, user: dict = 
     patient_text = patient_result.data if patient_result else fallback_patient
     doctor_text = doctor_result.data if doctor_result else fallback_doctor
     save_explanations(body.day_id, patient_id, patient_text, doctor_text)
+    plog.log_stage(
+        "explain", day=body.day_id, patient=patient_id, lang=body.lang,
+        patient_model=patient_result.model if patient_result else "fallback",
+        doctor_model=doctor_result.model if doctor_result else "fallback",
+        tokens={"input": sum(r.input_tokens for r in (patient_result, doctor_result) if r),
+                "output": sum(r.output_tokens for r in (patient_result, doctor_result) if r)},
+        # leave-one-out effect of each answer on each top disease, as given to the LLM
+        attributions={d: [[ev, round(delta, 3)] for ev, delta in pairs] for d, pairs in attributions.items()},
+    )
     return {"patientExplanation": patient_text, "doctorExplanation": doctor_text}
 
 # ─── Doctor-only endpoints ───
@@ -1308,10 +1604,23 @@ async def update_by_doctor_endpoint(body: UpdateByDoctorRequest, user: dict = De
     )
     return {"ok": ok}
 
+@app.post("/doctor_feedback")
+async def doctor_feedback_endpoint(body: DoctorFeedbackRequest, user: dict = Depends(require_doctor)):
+    """The doctor's confirmed diagnosis for a diary day, kept next to the model's answer."""
+    result = insert_feedback(body.day_id, user.get("doctor_id"), body)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Day not found")
+    return {"ok": True, **result}
+
 @app.post("/list_patients_triage")
 async def list_patients_triage_endpoint(user: dict = Depends(require_doctor)):
     patients = get_all_patients_triage()
     return {"patients": patients}
+
+@app.get("/feedback_stats")
+async def feedback_stats_endpoint(user: dict = Depends(require_doctor)):
+    """Real-world accuracy: doctor-confirmed diagnoses vs the model, per model version."""
+    return get_feedback_stats()
 
 @app.post("/get_patient_info")
 async def get_patient_info_endpoint(body: PatientInfoRequest, user: dict = Depends(require_patient_or_doctor)):
@@ -1440,7 +1749,7 @@ async def get_lab_results_endpoint(body: GetLabResultsRequest = None, user: dict
     if user.get("role") == "patient":
         patient_id = user["patient_id"]
     else:
-        if not body or not body.patient_id:
+        if body is None or body.patient_id is None:
             raise HTTPException(status_code=400, detail="patient_id required for doctors")
         patient_id = body.patient_id
 

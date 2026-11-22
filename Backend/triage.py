@@ -161,20 +161,24 @@ def assess(
 def critical_alert(evidences: Iterable[str]) -> Optional[dict]:
     """Immediate warning shown while the patient is still answering questions."""
     ev_set = set(evidences)
+    # `code` lets the frontend show the message in the patient's language
     if "E_112" in ev_set:
         return {
             "level": "red",
+            "code": "stridor",
             "message": "⚠️ СТРИДОР (шумное дыхание на вдохе) — признак обструкции дыхательных путей. "
                        "Немедленно вызовите скорую помощь (103)!",
         }
     if ev_set & RED_FLAG_EVIDENCES:
         return {
             "level": "red",
+            "code": "red_flag",
             "message": "⚠️ Обнаружены опасные симптомы. Рекомендуется срочная консультация врача или скорая помощь.",
         }
     if any(combo <= ev_set for combo in RED_FLAG_COMBOS):
         return {
             "level": "red",
+            "code": "red_flag_combo",
             "message": "⚠️ Сочетание симптомов указывает на возможное неотложное состояние. "
                        "Обратитесь к врачу как можно скорее.",
         }

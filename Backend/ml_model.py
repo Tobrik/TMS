@@ -164,6 +164,13 @@ _GEO_EXCLUDED: set = {
     "Inguinal hernia", # Surgical — not a diagnostic differential
 }
 
+# Diseases possible in Kazakhstan only after travel to where they occur. Chagas
+# needs triatomine bugs (Central / South America); DDXPlus's synthetic Chagas
+# profile (pain, headache, fatigue, fever) otherwise tops vague complaints.
+_TRAVEL_ONLY: Dict[str, set] = {
+    "Chagas": {"E_204_@_V_3", "E_204_@_V_5"},  # Central America, South America
+}
+
 
 # ─── Rule-based exclusion dictionary ─────────────────────────────────────────
 # Each rule: if ALL `require` evidences present AND NONE of `absent` evidences
@@ -293,35 +300,46 @@ def _nb_class_proba(
 
 def _apply_clinical_adjustments(
     proba: np.ndarray, ev_set: set, age: Optional[int], sex: Optional[str], hand_priors: bool = True,
+    notes: Optional[List[str]] = None,
 ) -> np.ndarray:
     """Geographic filter, correction rules and age/sex priors, applied per class
-    (before pooling, so both members of a clinical group are adjusted alike)."""
+    (before pooling, so both members of a clinical group are adjusted alike).
+    If `notes` is given, every adjustment that changed a non-negligible
+    probability is appended to it (for the pipeline logs)."""
+    total_before = float(proba.sum()) or 1.0
     p = proba.astype(np.float64).copy()
 
-    def scale(disease: str, factor: float) -> None:
+    def scale(disease: str, factor: float, why: str) -> None:
         if disease in _CLASS_IDX:
-            p[_CLASS_IDX[disease]] *= factor
+            i = _CLASS_IDX[disease]
+            if notes is not None and p[i] / total_before >= 0.001:
+                notes.append(f"{disease} x{factor:g} ({why}; was {p[i] / total_before:.3f})")
+            p[i] *= factor
 
     # Geographic filter — diseases absent in CIS/Central Asia
     for disease in _GEO_EXCLUDED:
-        scale(disease, 0.0)
+        scale(disease, 0.0, "excluded in KZ")
+    for disease, travel in _TRAVEL_ONLY.items():
+        if not travel & ev_set:
+            scale(disease, 0.0, "no travel to an endemic region")
 
     # Rule 1: Pleuritic pain (E_220) is AGAINST MI / ACS.
     if "E_220" in ev_set:
         for acs_name in ("Possible NSTEMI / STEMI", "Unstable angina"):
-            scale(acs_name, 0.4)  # 60% penalty
+            scale(acs_name, 0.4, "pleuritic pain E_220")  # 60% penalty
 
     # Rule 2: GERD context (E_173 present) — penalize PE and pulmonary edema.
     if "E_173" in ev_set and "E_14" not in ev_set:
         for noise_name in ("Pulmonary embolism", "Acute pulmonary edema",
                            "Spontaneous pneumothorax"):
-            scale(noise_name, 0.3)  # 70% penalty
+            scale(noise_name, 0.3, "reflux E_173 without chest pain")  # 70% penalty
 
     # Rule-based exclusion dictionary: ALL `require` present, NONE of `absent`.
     for rule in _EXCLUSION_RULES:
         if rule["require"] <= ev_set and not any(_mentions(ev_set, a) for a in rule["absent"]):
             for disease in rule["diseases"]:
-                scale(disease, rule["penalty"])
+                scale(disease, rule["penalty"], f"rule: {'+'.join(sorted(rule['require']))} "
+                                                f"without {'/'.join(sorted(rule['absent']))}")
 
     # Age/sex priors: soft penalties, not hard blocks. Only for a stated age —
     # v1 defaulted unknown ages to 25, penalising ACS for anyone who didn't say.
@@ -332,7 +350,7 @@ def _apply_clinical_adjustments(
             sex_match = prior.get("sex")  # None = any sex
             if age_lo <= age <= age_hi and (sex_match is None or sex == sex_match):
                 for disease in prior["diseases"]:
-                    scale(disease, prior["penalty"])
+                    scale(disease, prior["penalty"], f"age {age_lo}-{age_hi}{' ' + sex_match if sex_match else ''}")
 
     total = p.sum()
     return p / total if total > 0 else p
@@ -344,9 +362,11 @@ def class_posterior(
     age: Optional[int] = None,
     sex: Optional[str] = None,
     posterior: Optional[str] = None,
+    notes: Optional[List[str]] = None,
 ) -> np.ndarray:
     """P(disease | answers) per LABEL_CLASSES entry, after clinical adjustments.
-    age/sex = None means the patient didn't say."""
+    age/sex = None means the patient didn't say. `notes` collects the
+    adjustments that fired (see _apply_clinical_adjustments)."""
     posterior = posterior or POSTERIOR
     present = list(dict.fromkeys(evidences))
     absent = [e for e in dict.fromkeys(absent) if e not in set(present)]
@@ -355,7 +375,7 @@ def class_posterior(
         proba = _nb_class_proba(present, absent, age, sex)
     else:
         proba = _rf_class_proba(present, age, sex)
-    return _apply_clinical_adjustments(proba, set(present), age, sex, hand_priors=posterior != "nb")
+    return _apply_clinical_adjustments(proba, set(present), age, sex, hand_priors=posterior != "nb", notes=notes)
 
 
 def pool_classes(proba: np.ndarray) -> Dict[str, float]:
@@ -377,6 +397,22 @@ def predict_distribution(
 ) -> Dict[str, float]:
     """Full differential: canonical disease → probability, highest first."""
     return pool_classes(class_posterior(evidences, absent, age, sex, **kwargs))
+
+
+def evidence_fit(evidences: Iterable[str], diseases: Iterable[str]) -> Dict[str, Dict[str, float]]:
+    """P(evidence | disease) from evidence_stats for each reported evidence, per
+    disease — shows which answers a diagnosis actually explains. Values at the
+    smoothing floor (_LIKELIHOOD_FLOOR) mean "never seen with this disease".
+    A pooled clinical group uses its first member."""
+    by_canonical = {}
+    for disease in LABEL_CLASSES:
+        by_canonical.setdefault(_GROUP_MAP.get(disease, disease), disease)
+    fit = {}
+    for disease in diseases:
+        row = _CLASS_IDX.get(by_canonical.get(disease, disease))
+        if row is not None:
+            fit[disease] = {e: round(float(LIKELIHOODS[row, _feat_idx[e]]), 3) for e in evidences if e in _feat_idx}
+    return fit
 
 
 def predict_top(
@@ -533,11 +569,11 @@ _NEVER_ASK = {
 # ─── Manual translations for the most common diagnostic questions ───
 # Covers the ~60 most frequently selected discriminative evidences
 _QUESTION_TRANSLATIONS: dict = {
-    "E_91": {"ru": "У вас есть температура (ощущение жара или измеренная термометром)?", "kk": "Сізде қызба бар ма (қыздырып тұру немесе термометрмен өлшенген)?"},
+    "E_91": {"ru": "У вас есть температура (ощущение жара или измеренная термометром)?", "kk": "Қызуыңыз көтерілді ме (өзіңіз сездіңіз немесе термометрмен өлшедіңіз)?"},
     "E_94": {"ru": "У вас был озноб или дрожь?", "kk": "Сізде қалтырау немесе дірілдеу болды ма?"},
     "E_97": {"ru": "У вас болит горло?", "kk": "Сіздің тамағыңыз ауырады ма?"},
     "E_201": {"ru": "У вас есть кашель?", "kk": "Сізде жөтел бар ма?"},
-    "E_181": {"ru": "У вас заложен нос или прозрачные выделения из носа?", "kk": "Сіздің мұрныңыз бітелген немесе мөлдір бөліндіге бар ма?"},
+    "E_181": {"ru": "У вас заложен нос или прозрачные выделения из носа?", "kk": "Мұрныңыз бітелді ме немесе мөлдір сұйықтық ағады ма?"},
     "E_66": {"ru": "У вас значительная одышка или затруднение дыхания?", "kk": "Сізде айтарлықтай ентігу немесе дем алу қиындығы бар ма?"},
     "E_14": {"ru": "У вас есть боль в груди даже в состоянии покоя?", "kk": "Сізде тыныштық жағдайда да кеуде ауруы бар ма?"},
     "E_53": {"ru": "У вас есть боль, связанная с причиной вашего обращения?", "kk": "Сіздің шағымыңызбен байланысты ауырсыну бар ма?"},
@@ -556,14 +592,14 @@ _QUESTION_TRANSLATIONS: dict = {
     "E_65": {"ru": "Вам трудно глотать или есть дискомфорт при глотании?", "kk": "Сіздің жұтуыңыз қиынға соғады ма немесе жұтқанда ыңғайсыздық бар ма?"},
     "E_173": {"ru": "У вас есть жжение, которое поднимается из желудка в горло с кисловатым привкусом?", "kk": "Сізде асқазаннан тамаққа қышқыл дәммен бірге жоғары көтерілетін жану сезімі бар ма?"},
     "E_30": {"ru": "Ваш живот вздут или раздут?", "kk": "Сіздің қарныңыз кеуіп немесе ісіп тұр ма?"},
-    "E_64": {"ru": "Вы задыхаетесь при минимальной физической нагрузке?", "kk": "Ең аз дене жаттығуынан кейін ентігесіз бе?"},
+    "E_64": {"ru": "Вы легко задыхаетесь при физической нагрузке?", "kk": "Күш түскенде тез ентігесіз бе?"},
     "E_129": {"ru": "У вас есть высыпания, покраснение или проблемы с кожей?", "kk": "Сізде бөртпе, қызару немесе тері мәселелері бар ма?"},
     "E_82": {"ru": "У вас кружится голова или вы чувствуете, что можете упасть в обморок?", "kk": "Сіздің басыңыз айналады ма немесе естен тануға жақын сезінесіз бе?"},
     "E_164": {"ru": "Вы чувствуете, что ваше сердце бьётся очень нерегулярно или хаотично?", "kk": "Сіздің жүрегіңіз өте тұрақсыз немесе хаотты соғып тұрғанын сезесіз бе?"},
     "E_124": {"ru": "У вас есть астма или вы когда-либо использовали бронходилататор?", "kk": "Сізде демікпе бар ма немесе бұрын бронходилататор қолдандыңыз ба?"},
-    "E_214": {"ru": "Вы замечаете свистящий звук при выдохе?", "kk": "Ыдырау кезінде ысқырған дыбыс байқайсыз ба?"},
-    "E_211": {"ru": "Вас несколько раз вырвало или были многократные позывы к рвоте?", "kk": "Сіздің бірнеше рет қусы ма немесе бірнеше рет құсуға ынтызарлық болды ма?"},
-    "E_154": {"ru": "Ваша кожа значительно бледнее, чем обычно?", "kk": "Сіздің терінгіз әдеттегіден айтарлықтай бозарып кетті ме?"},
+    "E_214": {"ru": "Вы замечаете свистящий звук при выдохе?", "kk": "Дем шығарғанда ысқырған дыбыс байқайсыз ба?"},
+    "E_211": {"ru": "Вас несколько раз вырвало или были многократные позывы к рвоте?", "kk": "Бірнеше рет құстыңыз ба немесе құсуға бірнеше рет талпыныс болды ма?"},
+    "E_154": {"ru": "Ваша кожа значительно бледнее, чем обычно?", "kk": "Теріңіз әдеттегіден айтарлықтай бозарып кетті ме?"},
     "E_76": {"ru": "Вы чувствуете лёгкое головокружение или неустойчивость?", "kk": "Сіз жеңіл бас айналуды немесе тұрақсыздықты сезесіз бе?"},
     "E_13": {"ru": "Симптомы ухудшились за последние 2 недели и для их появления требуется всё меньше усилий?", "kk": "Соңғы 2 аптада белгілер нашарлады ма және олардың пайда болуы үшін күш азая ма?"},
     "E_41": {"ru": "Вы контактировали с человеком со схожими симптомами за последние 2 недели?", "kk": "Соңғы 2 аптада ұқсас белгілері бар адаммен байланыста болдыңыз ба?"},
@@ -572,12 +608,12 @@ _QUESTION_TRANSLATIONS: dict = {
     "E_22": {"ru": "У вас диагностирована проблема с сердечным клапаном?", "kk": "Сізде жүрек клапанының мәселесі диагноз қойылды ма?"},
     "E_139": {"ru": "У вас врождённый порок сердца?", "kk": "Сізде туа біткен жүрек ақауы бар ма?"},
     "E_106": {"ru": "У вас сердечная недостаточность?", "kk": "Сізде жүрек жеткіліксіздігі бар ма?"},
-    "E_64": {"ru": "Вы задыхаетесь при минимальной физической нагрузке?", "kk": "Ең аз күш жұмсаған кезде ентігесіз бе?"},
+    "E_64": {"ru": "Вы легко задыхаетесь при физической нагрузке?", "kk": "Күш түскенде тез ентігесіз бе?"},
     "E_67": {"ru": "У вас бывают приступы удушья или одышки, которые будят вас ночью?", "kk": "Түнде ұйқыдан оятатын тұншығу немесе ентігу ұстамалары болады ма?"},
     "E_33": {"ru": "Боль уменьшается, когда вы наклоняетесь вперёд?", "kk": "Алға еңкейгенде ауырсыну азаяды ма?"},
     "E_128": {"ru": "Вы когда-либо чувствовали, что задыхаетесь — кратковременно не могли дышать или говорить?", "kk": "Сіз қысқа уақытқа тыныс ала алмай немесе сөйлей алмай қалдыңыз ба?"},
     "E_216": {"ru": "Боль усиливается при движении?", "kk": "Қозғалыс кезінде ауырсыну күшейе ме?"},
-    "E_30": {"ru": "Ваш живот вздут или распирает изнутри?", "kk": "Сіздің қарныңыз ішінен қысым сезіп кеуіп тұр ма?"},
+    "E_30": {"ru": "Ваш живот вздут или распирает изнутри?", "kk": "Іш кебуі немесе қарныңыздың ісінуі бар ма?"},
     "E_129": {"ru": "У вас есть высыпания, покраснение или проблемы с кожей?", "kk": "Сізде бөртпе, қызару немесе тері мәселелері бар ма?"},
     "E_169": {"ru": "У вас зудит нос или задняя стенка горла?", "kk": "Сіздің мұрныңыз немесе тамағыңыздың артқы қабырғасы қышиды ма?"},
     "E_170": {"ru": "У вас сильный зуд в одном или обоих глазах?", "kk": "Бір немесе екі көзіңіз қатты қышиды ма?"},
@@ -586,13 +622,13 @@ _QUESTION_TRANSLATIONS: dict = {
     "E_86": {"ru": "Есть ли у ваших близких родственников аллергия, сенная лихорадка или экзема?", "kk": "Жақын туыстарыңызда аллергия, шөп безгегі немесе экзема бар ма?"},
     "E_45": {"ru": "Вы кашляете кровью?", "kk": "Сіз қан жөтелесіз бе?"},
     "E_203": {"ru": "У вас сильные приступы кашля?", "kk": "Сізде күшті жөтел ұстамалары бар ма?"},
-    "E_202": {"ru": "У пациента коклюш (спастический кашель)?", "kk": "Пациентте күкірт жөтел бар ма?"},
-    "E_40": {"ru": "Вы контактировали с больным коклюшем?", "kk": "Сіз күкірт жөтелімен ауырған адаммен байланыста болдыңыз ба?"},
+    "E_202": {"ru": "У вас лающий кашель (грубый, похожий на лай)?", "kk": "Жөтеліңіз ит үргендей қатқыл ма?"},
+    "E_40": {"ru": "Вы контактировали с больным коклюшем?", "kk": "Сіз көкжөтелмен ауырған адаммен байланыста болдыңыз ба?"},
     "E_112": {"ru": "При вдохе у вас свистящее или шумное дыхание после приступов кашля?", "kk": "Жөтел ұстамасынан кейін дем алғанда ысқырған немесе шулы тыныс алу бар ма?"},
     "E_194": {"ru": "Вы замечаете высокочастотный звук при вдохе?", "kk": "Дем алғанда жоғары жиілікті дыбыс байқайсыз ба?"},
     # ── Additional translations (previously shown in English) ─────────────
     "E_23": {"ru": "Вы когда-нибудь временно переставали дышать во сне?", "kk": "Ұйқыда уақытша тыныс алуыңыз тоқтады ма?"},
-    "E_32": {"ru": "У вас снижен аппетит?", "kk": "Тәбетіңіз төмендеді ме?"},
+    "E_32": {"ru": "Ребёнок стал меньше есть или пить?", "kk": "Балаңыз аз тамақтанып, аз ішетін болды ма?"},
     "E_38": {"ru": "У вас есть боль или слабость в челюсти?", "kk": "Жағыңызда ауырсыну немесе әлсіздік бар ма?"},
     "E_39": {"ru": "Вы чувствовали спутанность сознания или дезориентацию в последнее время?", "kk": "Соңғы кезде сананың шатасуын немесе бағдарсыздықты сездіңіз бе?"},
     "E_42": {"ru": "Вы контактировали с чем-то или съели что-то, на что у вас аллергия?", "kk": "Аллергия тудыратын нәрсемен байланыста болдыңыз ба немесе жедіңіз бе?"},
@@ -629,7 +665,7 @@ _QUESTION_TRANSLATIONS: dict = {
     "E_176": {"ru": "У вас была или есть слабость/паралич в руках, ногах или лице?", "kk": "Қолдарда, аяқтарда немесе бетте әлсіздік/сал болды ма немесе бар ма?"},
     "E_177": {"ru": "У вас есть или было онемение, потеря чувствительности или покалывание?", "kk": "Денеңізде жансыздану, сезімталдықтың жоғалуы немесе шаншу бар ма?"},
     "E_178": {"ru": "Вы заметили необычное кровотечение или синяки?", "kk": "Әдеттен тыс қан кету немесе көгерулер байқадыңыз ба?"},
-    "E_179": {"ru": "Вы замечали алую кровь или сгустки крови в стуле?", "kk": "Нәжісте ашық қан немесе қан ұйынділарын байқадыңыз ба?"},
+    "E_179": {"ru": "Вы замечали алую кровь или сгустки крови в стуле?", "kk": "Нәжісте ашық қан немесе қан ұйындыларын байқадыңыз ба?"},
     "E_180": {"ru": "Вы не можете контролировать направление взгляда?", "kk": "Көз қарасыңыздың бағытын бақылай алмайсыз ба?"},
     "E_188": {"ru": "У вас светлый стул и тёмная моча?", "kk": "Сізде ақшыл нәжіс және қоңыр зәр бар ма?"},
     "E_190": {"ru": "Вы заметили, что у вас выделяется больше слюны, чем обычно?", "kk": "Әдеттегіден көп сілекей бөлінетінін байқадыңыз ба?"},
