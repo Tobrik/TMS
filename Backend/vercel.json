@@ -10,7 +10,8 @@
           "training sklearn/label_classes.json",
           "training sklearn/release_evidences.json",
           "training sklearn/evidence_stats.json",
-          "training sklearn/release_conditions.json"
+          "training sklearn/release_conditions.json",
+          "eval/accuracy_report.json"
         ],
         "maxLambdaSize": "50mb"
       }
