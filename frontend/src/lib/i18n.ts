@@ -4,6 +4,9 @@ const translations = {
   ru: {
     // Chat page
     chatTitle: "TMS Assistant",
+    sendMessage: "Отправить сообщение",
+    closeHistory: "Закрыть историю",
+    copyCode: "Скопировать код",
     online: "Онлайн",
     history: "История",
     logout: "Выйти",
@@ -344,6 +347,9 @@ const translations = {
   en: {
     // Chat page
     chatTitle: "TMS Assistant",
+    sendMessage: "Send message",
+    closeHistory: "Close history",
+    copyCode: "Copy code",
     online: "Online",
     history: "History",
     logout: "Logout",
@@ -684,6 +690,9 @@ const translations = {
   kk: {
     // Chat page
     chatTitle: "TMS Көмекші",
+    sendMessage: "Хабарлама жіберу",
+    closeHistory: "Тарихты жабу",
+    copyCode: "Кодты көшіру",
     online: "Онлайн",
     history: "Тарих",
     logout: "Шығу",

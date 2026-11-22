@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
+import dynamic from "next/dynamic";
 import {
   Stethoscope, LogIn, LogOut, Loader2, Search, FileText, Edit3, Save,
   X, ChevronDown, ChevronUp, User, Calendar, Activity, ArrowLeft,
@@ -20,11 +21,16 @@ import {
   type Condition, type FeedbackStats, type Zone,
 } from "@/lib/api";
 import { getDiseaseLabel } from "@/lib/diseaseWeights";
-import { SymptomTrend } from "@/components/SymptomTrend";
 import { MarkdownText } from "@/components/MarkdownText";
 import { generatePatientPDF } from "@/lib/pdfExport";
 import { getSymptomLabel, type SymptomCode } from "@/lib/symptoms";
 import { t, getLang, type Lang, type TranslationKey } from "@/lib/i18n";
+
+// recharts is only needed for the symptom trend card, so it is split out of the first load.
+const SymptomTrend = dynamic(
+  () => import("@/components/SymptomTrend").then((m) => m.SymptomTrend),
+  { ssr: false, loading: () => <div className="h-56" aria-hidden="true" /> }
+);
 
 function parseIdFromCode(input: string): number | null {
   const trimmed = input.trim();
@@ -429,8 +435,9 @@ export default function DoctorPage() {
     return (
       <div className="space-y-3 rounded-xl border border-indigo-200 bg-white p-3">
         <div className="space-y-1">
-          <label className="text-xs font-medium text-gray-500">{t("fbDiagnosisLabel", lang)}</label>
+          <label htmlFor="doctor-fb-diagnosis" className="text-xs font-medium text-gray-500">{t("fbDiagnosisLabel", lang)}</label>
           <select
+            id="doctor-fb-diagnosis"
             value={fbDiagnosis}
             onChange={(e) => setFbDiagnosis(e.target.value)}
             disabled={fbSaving || !conditions}
@@ -446,6 +453,7 @@ export default function DoctorPage() {
         {isOther && (
           <Input
             maxLength={200}
+            aria-label={t("fbDiagnosisLabel", lang)}
             placeholder={t("fbOtherPlaceholder", lang)}
             value={fbOther}
             onChange={(e) => setFbOther(e.target.value)}
@@ -453,8 +461,9 @@ export default function DoctorPage() {
           />
         )}
         <div className="space-y-1">
-          <label className="text-xs font-medium text-gray-500">{t("zoneLabel", lang)}</label>
+          <label htmlFor="doctor-fb-zone" className="text-xs font-medium text-gray-500">{t("zoneLabel", lang)}</label>
           <select
+            id="doctor-fb-zone"
             value={fbZone}
             onChange={(e) => setFbZone(e.target.value as Zone | "")}
             disabled={fbSaving}
@@ -467,8 +476,9 @@ export default function DoctorPage() {
           </select>
         </div>
         <div className="space-y-1">
-          <label className="text-xs font-medium text-gray-500">{t("fbNoteLabel", lang)}</label>
+          <label htmlFor="doctor-fb-note" className="text-xs font-medium text-gray-500">{t("fbNoteLabel", lang)}</label>
           <Textarea
+            id="doctor-fb-note"
             maxLength={1000}
             rows={2}
             value={fbNote}
@@ -531,8 +541,8 @@ export default function DoctorPage() {
                 )}
               </div>
               <div className="space-y-2">
-                <label className="text-sm font-medium text-gray-700">{t("password", lang)}</label>
-                <Input type="password" maxLength={64} placeholder={t("passwordPlaceholder", lang)} value={pin}
+                <label htmlFor="doctor-login-pin" className="text-sm font-medium text-gray-700">{t("password", lang)}</label>
+                <Input id="doctor-login-pin" type="password" maxLength={64} placeholder={t("passwordPlaceholder", lang)} value={pin}
                   onChange={(e) => setPin(e.target.value.slice(0, 64))} onKeyDown={(e) => e.key === "Enter" && handleLogin()} />
               </div>
               {loginError && <p className="text-sm text-red-500 text-center">{loginError}</p>}
@@ -636,9 +646,9 @@ export default function DoctorPage() {
               <h2 className="font-semibold text-gray-900">{t("searchPatient", lang)}</h2>
             </div>
             <div className="flex gap-2">
-              <Input type="text" placeholder={t("patientCodePlaceholder", lang)} value={patientIdInput}
+              <Input type="text" aria-label={t("patientCodePlaceholder", lang)} placeholder={t("patientCodePlaceholder", lang)} value={patientIdInput}
                 onChange={(e) => setPatientIdInput(e.target.value)} onKeyDown={(e) => e.key === "Enter" && handleSearchPatient()} className="flex-1" />
-              <Button onClick={handleSearchPatient} disabled={historyLoading} className="bg-indigo-600 hover:bg-indigo-700 text-white">
+              <Button onClick={handleSearchPatient} disabled={historyLoading} aria-label={t("searchPatient", lang)} className="bg-indigo-600 hover:bg-indigo-700 text-white">
                 {historyLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}
               </Button>
             </div>
@@ -746,6 +756,7 @@ export default function DoctorPage() {
                 return (
                   <Card key={entry.day_id} className="overflow-hidden">
                     <button className="w-full text-left px-4 py-3 flex items-center justify-between hover:bg-gray-50 transition-colors"
+                      aria-expanded={isExpanded}
                       onClick={() => handleExpand(entry.day_id)}>
                       <div className="flex items-center gap-3 min-w-0">
                         <div className="w-8 h-8 rounded-lg bg-indigo-100 flex items-center justify-center shrink-0">
@@ -837,7 +848,7 @@ export default function DoctorPage() {
                         <div className="space-y-1">
                           <p className="text-xs font-medium text-gray-500 uppercase tracking-wide">{t("doctorDiagnosis", lang)}</p>
                           {isEditing ? (
-                            <Input value={editDiagnosis} onChange={(e) => setEditDiagnosis(e.target.value)} placeholder={t("setDiagnosis", lang)} className="bg-white" />
+                            <Input value={editDiagnosis} onChange={(e) => setEditDiagnosis(e.target.value)} aria-label={t("doctorDiagnosis", lang)} placeholder={t("setDiagnosis", lang)} className="bg-white" />
                           ) : (
                             <p className="text-sm text-gray-900">
                               {entry.disease_setup && entry.disease_setup !== "Nothing" ? entry.disease_setup : <span className="text-gray-400 italic">{t("notSet", lang)}</span>}
@@ -848,7 +859,7 @@ export default function DoctorPage() {
                         <div className="space-y-1">
                           <p className="text-xs font-medium text-gray-500 uppercase tracking-wide">{t("recept", lang)}</p>
                           {isEditing ? (
-                            <Textarea value={editRecept} onChange={(e) => setEditRecept(e.target.value)} placeholder={t("writeRecept", lang)} rows={3} className="bg-white" />
+                            <Textarea value={editRecept} onChange={(e) => setEditRecept(e.target.value)} aria-label={t("recept", lang)} placeholder={t("writeRecept", lang)} rows={3} className="bg-white" />
                           ) : (
                             <p className="text-sm text-gray-900 whitespace-pre-wrap">
                               {entry.recept || <span className="text-gray-400 italic">{t("noRecommendations", lang)}</span>}

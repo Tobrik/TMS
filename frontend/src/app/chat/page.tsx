@@ -632,6 +632,7 @@ export default function ChatPage() {
                 variant="ghost"
                 size="icon"
                 onClick={() => setShowHistory(false)}
+                aria-label={t("closeHistory", lang)}
               >
                 <X className="h-5 w-5" />
               </Button>
@@ -681,7 +682,7 @@ export default function ChatPage() {
       )}
 
       {/* Messages Area */}
-      <div className="flex-1 overflow-y-auto px-4 py-4 space-y-4">
+      <div className="flex-1 overflow-y-auto px-4 py-4 space-y-4" role="log" aria-live="polite" aria-relevant="additions">
         {messages.map((msg) => (
           <div key={msg.id} className="space-y-2">
             <ChatMessage
@@ -880,6 +881,7 @@ export default function ChatPage() {
           />
           <Button
             onClick={handleSend}
+            aria-label={t("sendMessage", lang)}
             disabled={isLoading || answeringQuestions || cooldown > 0 || !input.trim()}
             className="bg-blue-600 hover:bg-blue-700 text-white shadow-md px-4"
           >

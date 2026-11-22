@@ -57,8 +57,3 @@ const SYMPTOM_LABELS_I18N: Record<SymptomCode, Record<Lang, string>> = {
 export function getSymptomLabel(code: SymptomCode, lang: Lang = "ru"): string {
   return SYMPTOM_LABELS_I18N[code]?.[lang] || SYMPTOM_LABELS_I18N[code]?.ru || code;
 }
-
-// Default Russian export for backward compatibility
-export const SYMPTOM_LABELS: Record<SymptomCode, string> = Object.fromEntries(
-  Object.entries(SYMPTOM_LABELS_I18N).map(([k, v]) => [k, (v as Record<Lang, string>).ru])
-) as Record<SymptomCode, string>;

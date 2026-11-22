@@ -199,14 +199,3 @@ export function getDiseaseDoctor(disease: string, lang: Lang = "ru"): string {
 export function getDiseaseRecommendation(disease: string, lang: Lang = "ru"): string {
   return DISEASE_RECOMMENDATIONS_I18N[disease]?.[lang] || DISEASE_RECOMMENDATIONS_I18N[disease]?.ru || "";
 }
-
-// Default Russian exports for backward compatibility
-export const DISEASE_LABELS: Record<string, string> = Object.fromEntries(
-  Object.entries(DISEASE_LABELS_I18N).map(([k, v]) => [k, v.ru])
-);
-export const DISEASE_DOCTORS: Record<string, string> = Object.fromEntries(
-  Object.entries(DISEASE_DOCTORS_I18N).map(([k, v]) => [k, v.ru])
-);
-export const DISEASE_RECOMMENDATIONS: Record<string, string> = Object.fromEntries(
-  Object.entries(DISEASE_RECOMMENDATIONS_I18N).map(([k, v]) => [k, v.ru])
-);

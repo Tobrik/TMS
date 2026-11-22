@@ -4,21 +4,6 @@ export interface DiseaseSlice {
   score: number;
 }
 
-export interface LabInfluence {
-  markerName: string;
-  status: "high" | "low";
-  direction: string;
-  effect: "boost" | "suppress";
-  diseases: string[];
-  delta: number;
-}
-
-export interface LabContext {
-  adjustments: Record<string, number>;
-  influences: LabInfluence[];
-  hasData: boolean;
-}
-
 export interface DiagnosisResult {
   diseaseName: string;
   diseaseLabel: string;
@@ -28,7 +13,6 @@ export interface DiagnosisResult {
   patientExplanation?: string;
   doctorExplanation?: string;
   explanationPending?: boolean;
-  labInfluences?: LabInfluence[];
   zone?: "red" | "yellow" | "green";
   reasons?: TriageReason[];
   outOfScope?: { likely_condition: string | null } | null;

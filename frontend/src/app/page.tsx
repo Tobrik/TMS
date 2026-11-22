@@ -198,7 +198,7 @@ export default function LoginPage() {
                         <div className="bg-gray-50 border-2 border-blue-200 rounded-xl px-6 py-3 font-mono text-2xl font-bold text-blue-700 tracking-wider">
                           {registeredCode}
                         </div>
-                        <Button variant="outline" size="icon" onClick={handleCopy} className="shrink-0">
+                        <Button variant="outline" size="icon" onClick={handleCopy} className="shrink-0" aria-label={t("copyCode", lang)}>
                           {copied ? <Check className="h-4 w-4 text-emerald-500" /> : <Copy className="h-4 w-4" />}
                         </Button>
                       </div>
@@ -211,16 +211,16 @@ export default function LoginPage() {
                 ) : (
                   <>
                     <div className="space-y-2">
-                      <label className="text-sm font-medium text-gray-700">{t("yourName", lang)}</label>
-                      <Input placeholder={t("namePlaceholder", lang)} value={regName} onChange={(e) => setRegName(e.target.value)} />
+                      <label htmlFor="reg-name" className="text-sm font-medium text-gray-700">{t("yourName", lang)}</label>
+                      <Input id="reg-name" placeholder={t("namePlaceholder", lang)} value={regName} onChange={(e) => setRegName(e.target.value)} />
                     </div>
                     <div className="space-y-2">
-                      <label className="text-sm font-medium text-gray-700">{t("city", lang)}</label>
-                      <Input placeholder={t("cityPlaceholder", lang)} value={regCity} onChange={(e) => setRegCity(e.target.value)} />
+                      <label htmlFor="reg-city" className="text-sm font-medium text-gray-700">{t("city", lang)}</label>
+                      <Input id="reg-city" placeholder={t("cityPlaceholder", lang)} value={regCity} onChange={(e) => setRegCity(e.target.value)} />
                     </div>
                     <div className="space-y-2">
-                      <label className="text-sm font-medium text-gray-700">{t("passwordLabel", lang)}</label>
-                      <Input type="password" maxLength={64} placeholder={t("passwordPlaceholder", lang)} value={regPin} onChange={(e) => setRegPin(e.target.value.slice(0, 64))} />
+                      <label htmlFor="reg-pin" className="text-sm font-medium text-gray-700">{t("passwordLabel", lang)}</label>
+                      <Input id="reg-pin" type="password" maxLength={64} placeholder={t("passwordPlaceholder", lang)} value={regPin} onChange={(e) => setRegPin(e.target.value.slice(0, 64))} />
                     </div>
                     {regError && <p className="text-sm text-red-500 text-center">{regError}</p>}
                     <Button className="w-full bg-gradient-to-r from-blue-600 to-teal-500 hover:from-blue-700 hover:to-teal-600 text-white shadow-lg shadow-blue-200" onClick={handleRegister} disabled={regLoading}>
@@ -233,12 +233,12 @@ export default function LoginPage() {
 
               <TabsContent value="login" className="space-y-4">
                 <div className="space-y-2">
-                  <label className="text-sm font-medium text-gray-700">{t("yourCode", lang)}</label>
-                  <Input type="text" placeholder={t("codePlaceholder", lang)} value={loginId} onChange={(e) => setLoginId(e.target.value)} />
+                  <label htmlFor="login-code" className="text-sm font-medium text-gray-700">{t("yourCode", lang)}</label>
+                  <Input id="login-code" type="text" placeholder={t("codePlaceholder", lang)} value={loginId} onChange={(e) => setLoginId(e.target.value)} />
                 </div>
                 <div className="space-y-2">
-                  <label className="text-sm font-medium text-gray-700">{t("password", lang)}</label>
-                  <Input type="password" maxLength={64} placeholder={t("passwordPlaceholder", lang)} value={loginPin} onChange={(e) => setLoginPin(e.target.value.slice(0, 64))} />
+                  <label htmlFor="login-pin" className="text-sm font-medium text-gray-700">{t("password", lang)}</label>
+                  <Input id="login-pin" type="password" maxLength={64} placeholder={t("passwordPlaceholder", lang)} value={loginPin} onChange={(e) => setLoginPin(e.target.value.slice(0, 64))} />
                 </div>
                 {loginError && <p className="text-sm text-red-500 text-center">{loginError}</p>}
                 <Button className="w-full bg-gradient-to-r from-blue-600 to-teal-500 hover:from-blue-700 hover:to-teal-600 text-white shadow-lg shadow-blue-200" onClick={handleLogin} disabled={loginLoading}>

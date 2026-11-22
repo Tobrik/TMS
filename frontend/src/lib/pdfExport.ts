@@ -1,4 +1,3 @@
-import jsPDF from "jspdf";
 import type { PatientInfo, HistoryEntry } from "./api";
 import { getDiseaseLabel } from "./diseaseWeights";
 import { t, type Lang } from "./i18n";
@@ -35,6 +34,8 @@ export async function generatePatientPDF(
   lang: Lang = "ru"
 ): Promise<void> {
   const font = await loadFontBase64();
+  // jsPDF is large: load it only when a report is actually generated.
+  const { default: jsPDF } = await import("jspdf");
   const doc = new jsPDF();
   doc.addFileToVFS(FONT_FILE, font);
   doc.addFont(FONT_FILE, FONT_NAME, "normal");

@@ -7,7 +7,6 @@ import {
   AlertTriangle,
   ChevronRight,
   Brain,
-  FlaskConical,
   Loader2,
   ShieldAlert,
 } from "lucide-react";
@@ -169,39 +168,6 @@ export function DiagnosisCard({ diagnosis, lang }: DiagnosisCardProps) {
           <div className="flex justify-center py-2">
             <div className="w-56">
               <PieChart slices={diagnosis.slices} size={130} lang={l} />
-            </div>
-          </div>
-        )}
-
-        {/* Lab influences */}
-        {diagnosis.labInfluences && diagnosis.labInfluences.length > 0 && (
-          <div className="bg-violet-50/80 rounded-xl p-3 border border-violet-200">
-            <div className="flex items-center gap-2 mb-2">
-              <FlaskConical className="h-4 w-4 text-violet-600" />
-              <span className="text-xs font-semibold text-violet-700">
-                {t("labDataConsidered", l)}
-              </span>
-            </div>
-            <div className="space-y-1.5">
-              {diagnosis.labInfluences.map((inf, i) => (
-                <div key={i} className="flex items-center gap-2 text-sm">
-                  <span className="text-gray-700 font-medium">{inf.markerName}</span>
-                  <span
-                    className={`text-xs px-1.5 py-0.5 rounded font-medium ${
-                      inf.status === "high"
-                        ? "bg-red-100 text-red-700"
-                        : "bg-amber-100 text-amber-700"
-                    }`}
-                  >
-                    {inf.direction}
-                  </span>
-                  <span className="text-gray-400 text-xs">→</span>
-                  <span className="text-xs text-gray-600">
-                    {inf.effect === "boost" ? t("boostEffect", l) : t("suppressEffect", l)}{" "}
-                    {inf.diseases.map((d) => d).join(", ")}
-                  </span>
-                </div>
-              ))}
             </div>
           </div>
         )}
