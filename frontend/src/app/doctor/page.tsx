@@ -571,6 +571,7 @@ export default function DoctorPage() {
 
       <div className="max-w-3xl mx-auto p-4 space-y-6">
         {feedbackStats && (
+          <div className="space-y-2">
           <Card>
             <button
               className="w-full text-left px-4 py-3 flex items-center justify-between hover:bg-gray-50 transition-colors rounded-xl"
@@ -619,6 +620,13 @@ export default function DoctorPage() {
               </CardContent>
             )}
           </Card>
+          <div className="flex justify-end">
+            <Button variant="outline" size="sm" onClick={() => router.push("/accuracy")}>
+              <FileText />
+              {t("accuracyReportLink", lang)}
+            </Button>
+          </div>
+          </div>
         )}
 
         <Card>

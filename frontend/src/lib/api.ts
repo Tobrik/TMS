@@ -459,6 +459,116 @@ export async function getFeedbackStats(): Promise<FeedbackStats> {
   return data;
 }
 
+// Accuracy report (GET /accuracy_report, doctor only).
+// Metric object: value = k / n, ci = Wilson 95% interval; n == 0 -> value and ci null.
+export interface AccuracyMetric {
+  value: number | null;
+  k: number;
+  n: number;
+  ci: [number, number] | null;
+}
+
+export interface AccuracyCalibrationBin {
+  bin: string; // e.g. "0.9-1.0"
+  n: number;
+  mean_confidence: number;
+  accuracy: number; // plain share, no interval
+}
+
+export interface AccuracyCondition {
+  name: string;
+  label_ru: string;
+  tier: Zone;
+  top1: AccuracyMetric;
+  top3: AccuracyMetric;
+}
+
+export interface AccuracySynthetic {
+  source: string;
+  settings: { n: number; seed: number; noise: number; answer_error: number; dont_know: number };
+  metrics: {
+    top1: AccuracyMetric;
+    top3: AccuracyMetric;
+    red_sensitivity: AccuracyMetric;
+    red_to_green: AccuracyMetric;
+    green_to_red: AccuracyMetric;
+    zone_exact: AccuracyMetric;
+  };
+  questions_mean: number;
+  calibration: AccuracyCalibrationBin[];
+  low_confidence: { share: AccuracyMetric; top1_low: AccuracyMetric; top1_rest: AccuracyMetric };
+  per_condition: AccuracyCondition[]; // sorted weakest first by the backend
+}
+
+export interface AccuracyWrittenTriage {
+  top1: AccuracyMetric;
+  top3: AccuracyMetric;
+  red_sensitivity: AccuracyMetric;
+  red_to_green?: AccuracyMetric; // not in the contract for written cases: shown as "no data"
+  green_to_red: AccuracyMetric;
+}
+
+export type AccuracyLanguage = "ru" | "kk" | "mix" | "en";
+
+export interface AccuracyWritten {
+  held_out?: boolean; // false: the set was used while tuning (numbers may be optimistic)
+  source: string;
+  cases_file: string;
+  n_in_scope: number;
+  n_out_of_scope: number;
+  extraction: {
+    precision: AccuracyMetric;
+    recall: AccuracyMetric;
+    denials: AccuracyMetric;
+    red_flag_recall: AccuracyMetric;
+  };
+  patient_accepts: AccuracyWrittenTriage;
+  patient_confirms: AccuracyWrittenTriage;
+  by_language: Partial<Record<AccuracyLanguage, { n?: number; top1?: AccuracyMetric }>>;
+  out_of_scope: { flagged: AccuracyMetric; false_flags: AccuracyMetric };
+}
+
+export interface AccuracyRealPatients {
+  n: number;
+  other: number;
+  top1: AccuracyMetric;
+  top3: AccuracyMetric;
+  zone_exact: AccuracyMetric;
+  red_sensitivity: AccuracyMetric;
+  under_triage: AccuracyMetric;
+  over_triage: AccuracyMetric;
+  by_version: Record<string, { n: number; top1: AccuracyMetric; top3: AccuracyMetric }>;
+  since: string | null; // YYYY-MM-DD of the first feedback row
+}
+
+export interface AccuracyReport {
+  generated_at: string;
+  model_version: string;
+  extraction_backend: string;
+  synthetic: AccuracySynthetic;
+  written_cases: AccuracyWritten | null;
+  caveats: string[];
+  // Doctor-facing caveats and source lines per UI language (English `caveats` / `source` are the fallback)
+  i18n?: Partial<Record<"ru" | "en" | "kk", { caveats: string[]; synthetic_source: string; written_source: string }>>;
+}
+
+export interface AccuracyReportData extends AccuracyReport {
+  report_missing?: false;
+  real_patients: AccuracyRealPatients;
+}
+
+export interface AccuracyReportMissing {
+  report_missing: true;
+  real_patients: AccuracyRealPatients;
+}
+
+export type AccuracyReportResponse = AccuracyReportData | AccuracyReportMissing;
+
+export async function getAccuracyReport(): Promise<AccuracyReportResponse> {
+  const { data } = await api.get<AccuracyReportResponse>("/accuracy_report");
+  return data;
+}
+
 export interface LabResultItem {
   name: string;
   value: string;
