@@ -182,3 +182,13 @@ def test_clef_failure_falls_back_to_groq(fake_groq, fake_clef, monkeypatch):
     result = asyncio.run(extraction.extract_complaint(TEXT))
     assert result.mode == "llm"
     assert set(result.codes("present")) == {"E_91", "E_201"}
+
+
+def test_recall_net_adds_missed_symptoms_as_uncertain_only():
+    from extraction import Finding, apply_recall_net
+    findings = [Finding("E_91", "present"), Finding("E_181", "absent")]
+    out = apply_recall_net(findings, "Температура 38, сильный кашель, насморка нет")
+    by_code = {f.code: f for f in out}
+    assert by_code["E_201"].status == "uncertain" and by_code["E_201"].source == "regex"
+    assert by_code["E_91"].status == "present" and by_code["E_181"].status == "absent"  # decided codes untouched
+    assert all(f.status != "present" for f in out if f.source == "regex")

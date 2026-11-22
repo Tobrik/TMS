@@ -46,8 +46,9 @@ _VOCAB: List[Tuple[str, List[str]]] = [
      ["E_66"]),   # shortness of breath
     (r"свист\w+.{0,10}дыхани|хрипит|хриплое\s+дыхани|свист\w+.{0,10}выдох|хрипы\s+при\s+выдох",
      ["E_214"]),  # wheezing on exhale
-    (r"стридор|свист\w+.{0,10}вдох|шумн\w+\s+дыхани",
-     ["E_194"]),  # stridor / high-pitched noise on inhale
+    (r"стридор|свист\w+.{0,10}вдох|шумн\w+\s+дыхани|(?:при|на)\s+вдох\w*.{0,30}(?:свист|шумн|хрип)"
+     r"|дем\s+алғанда.{0,30}(?:ысқыр|шулы|сырыл)",
+     ["E_194"]),  # stridor / noisy or whistling breath on inhale (RU, KK)
     (r"боль.{0,10}горл|горло.{0,10}бол|глотать\s+больно|больно\s+глотать|фарингит|тонзиллит|горло\s+дер\w+|болит\s+горло",
      ["E_97", "E_53", "E_55_@_V_148"]),  # sore throat → pain present + pharynx location
     (r"чихани|чихает|чихаю",
@@ -294,7 +295,8 @@ _VOCAB: List[Tuple[str, List[str]]] = [
      ["E_66"]),   # shortness of breath
     (r"wheez\w+|wheezing\s+(?:on|when)\s+exhal",
      ["E_214"]),  # wheezing on exhale
-    (r"stridor|noisy\s+breath\w*\s+(?:in|when\s+inhal)",
+    (r"stridor|noisy\s+breath\w*\s+(?:in|when\s+inhal)|(?:breathing|breathes?)\s+in.{0,30}(?:whistl|noisy|high.pitched)"
+     r"|(?:whistl|noisy|high.pitched)\w*.{0,30}(?:breathing|breathe)\s+in\b",
      ["E_194"]),  # stridor
     (r"sore\s+throat|throat\s+(?:hurts|pain|ache)|painful\s+(?:to\s+)?swallow|difficulty\s+swallow",
      ["E_97", "E_53", "E_55_@_V_148"]),  # sore throat → pain + pharynx

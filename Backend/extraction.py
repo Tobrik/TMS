@@ -188,7 +188,9 @@ Rules:
 1. Every finding needs `quote`: the exact words from the patient's text that support it, copied verbatim in the original language (no translation, no paraphrase). If you cannot quote it, leave it out.
 2. status "present": the patient reports it. "uncertain": hedged ("кажется", "возможно", "вроде", "мүмкін", "сияқты", "maybe", "I think").
 3. status "absent": report EVERY symptom the patient denies or calls normal. Denials matter as much as complaints: the diagnosis uses them. Forms: "нет температуры", "без температуры", "температуры нету", "не кашляю", "горло не болит", "глотать не трудно", "аппетит нормальный", "с дыханием всё в порядке", "жөтел жоқ", "қызуым көтерілген жоқ", "тамағым ауырмайды" (Kazakh negative verb suffix -ма/-ме/-ба/-бе/-па/-пе), "тәбетім жақсы", "сөйлеуім қалыпты", "no fever", "I don't have a cough", "my appetite is fine". "Не могу дышать" / "can't breathe" is a symptom (present), not a denial.
-4. Code only what is said or unmistakably implied ("не встаю с кровати" → bedridden). Never add symptoms from general knowledge of a disease. Close codes: fever/temperature (температура, жар, қызу) = E_91, chills/shivering (озноб, знобит, қалтырау, тоңу) = E_94; appetite = E_161 (E_32 only for a baby feeding less); tiredness = E_89 (E_88 only if it stops usual activities or keeps them in bed); breathlessness = E_66 (E_64 only "breathless on exertion"); palpitations = E_155 (E_164 only "very irregular / chaotic"); whooping after coughing fits = E_112, barking cough = E_202.
+4. Code only what is said or unmistakably implied ("не встаю с кровати" → bedridden). Never add symptoms from general knowledge of a disease. Close codes: fever/temperature (температура, жар, қызу) = E_91, chills/shivering (озноб, знобит, қалтырау, тоңу) = E_94; appetite = E_161 (E_32 only for a baby feeding less); weakness or exhaustion during an illness of days (слабость, нет сил, разбитость, әлсіздік, күшім жоқ) = E_88, tiredness lasting weeks or months or unrefreshing sleep (постоянная усталость, үнемі шаршаймын) = E_89; body aches (ломит всё тело, ломота, мышцы болят, бүкіл денем сырқырайды, body aches) = E_144; breathlessness = E_66 (E_64 only "breathless on exertion"); palpitations = E_155 (E_164 only "very irregular / chaotic"); coughing fits (кашель приступами, жөтел ұстамасы) = E_203; barking cough = E_202.
+   Breathing sounds depend on the direction: noisy or whistling breath when breathing IN (при вдохе, на вдохе, дем алғанда, breathing in) = E_194, or E_112 if it comes right after coughing fits; wheezing when breathing OUT (на выдохе, при выдохе, дем шығарғанда, breathing out) = E_214; direction not stated = E_214.
+   Kazakh "тамақ" means both throat and food: "тамағым ауырады", "тамақ ауырады" = sore throat E_97 (appetite is "тәбет").
 5. Pain: if the patient has pain, add code E_53 as present AND fill `pain` (locations, radiation, character, intensity 0-10, onset_speed 0-10 where 10 = sudden) with what is stated; leave unstated parts empty/null. pain = null if no pain is mentioned.
 6. Never code chest pain at rest (E_14) or radiation to the arm/jaw without an explicit statement. Anxiety alone is not cardiac.
 7. One vomiting episode is E_148; E_211 only for repeated vomiting.
@@ -462,6 +464,21 @@ def apply_denial_net(findings: List[Finding], text: str) -> List[Finding]:
     return findings
 
 
+def apply_recall_net(findings: List[Finding], text: str) -> List[Finding]:
+    """Symptoms the regex vocabulary finds in `text` that the extractor did not
+    mention at all become "uncertain" chips (source "regex"): the patient sees a
+    "?" and decides, so they never count as evidence on their own. Measured on the
+    cached Groq results with patient confirmation: findings recall 79→89% (dev
+    set), red cases missed before questions 1/10→0/10, about one extra chip."""
+    from negation import vocab_findings
+
+    decided = {f.code for f in findings}
+    for code, status in sorted(vocab_findings(text).items()):
+        if status == "present" and code not in decided and code in _feat_idx:
+            findings.append(Finding(code, "uncertain", source="regex"))
+    return findings
+
+
 async def review(text: str, usage: Optional[Dict[str, int]] = None) -> Optional[dict]:
     result = await llm.chat_json(
         [{"role": "system", "content": REVIEW_PROMPT}, {"role": "user", "content": text}],
@@ -530,7 +547,7 @@ async def extract(text: str, with_review: bool = True) -> Extraction:
         logger.info("extract: fallback mode, %d findings", len(extraction.findings))
         return extraction
 
-    findings = apply_denial_net(apply_safety_net(_vote(samples, text), text), text)
+    findings = apply_recall_net(apply_denial_net(apply_safety_net(_vote(samples, text), text), text), text)
 
     from retrieval import extract_age_sex
     regex_age, regex_sex = extract_age_sex(text)

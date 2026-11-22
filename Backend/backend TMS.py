@@ -1201,8 +1201,16 @@ def save_explanations(day_id: int, patient_id: int, patient_explanation: str, do
 
 # ─── Startup ───
 
-create_tables()
-seed_doctors()
+# A database outage must not crash the whole function at import: then every
+# endpoint (even /health) answers Vercel's opaque FUNCTION_INVOCATION_FAILED.
+# Start anyway, log why, and retry from /health.
+_DB_STARTUP_ERROR: Optional[str] = None
+try:
+    create_tables()
+    seed_doctors()
+except Exception as e:
+    _DB_STARTUP_ERROR = f"{type(e).__name__}: {str(e).strip().splitlines()[0][:300]}"
+    logger.error("Database unavailable at startup, tables not checked: %s", _DB_STARTUP_ERROR)
 
 app = FastAPI(
     title="TMS API",
@@ -1235,6 +1243,7 @@ app.add_middleware(
 
 @app.get("/health")
 async def health():
+    global _DB_STARTUP_ERROR
     try:
         conn = connect()
         try:
@@ -1242,9 +1251,15 @@ async def health():
             cur.execute("SELECT 1")
         finally:
             conn.close()
-        return {"status": "healthy", "version": "1.0.0"}
-    except Exception:
-        return JSONResponse(status_code=503, content={"status": "unhealthy"})
+        if _DB_STARTUP_ERROR:  # the database came back: create any missing tables now
+            create_tables()
+            seed_doctors()
+            _DB_STARTUP_ERROR = None
+        return {"status": "healthy", "version": "1.0.0", "database": "ok"}
+    except Exception as e:
+        logger.error("Health check: database unreachable: %s", str(e).strip().splitlines()[0][:300])
+        # No connection details in the public response; they are in the logs.
+        return JSONResponse(status_code=503, content={"status": "unhealthy", "database": "unreachable"})
 
 @app.get("/")
 async def root():
