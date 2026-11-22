@@ -499,11 +499,7 @@ export default function ChatPage() {
       lowConfidence: result.low_confidence ?? false,
       explanationPending: true,
     };
-    const count = current.evidences.length;
-    const summary = lang === "en"
-      ? `${count} symptoms detected`
-      : lang === "kk" ? `${count} белгі анықталды` : `Обнаружено признаков: ${count}`;
-    const messageId = pushAssistant(`${t("detectedSymptoms", lang)}: ${summary}`, diagnosis);
+    const messageId = pushAssistant(`${t("detectedSymptoms", lang)}: ${current.evidences.length}`, diagnosis);
 
     const setExplanation = (patch: Partial<DiagnosisCardData>) =>
       setMessages((prev) => prev.map((m) =>
