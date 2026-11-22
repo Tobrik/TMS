@@ -18,11 +18,17 @@ api.interceptors.request.use((config) => {
   return config;
 });
 
+// Login/registration failures are shown by the login pages themselves ("wrong password"),
+// so they must not clear storage or redirect.
+const AUTH_FORM_PATHS = ["/login_patient", "/login_doctor", "/regist_as_patient"];
+
 // Handle 401 responses — redirect to login
 api.interceptors.response.use(
   (response) => response,
   (error) => {
-    if (error.response?.status === 401 && typeof window !== "undefined") {
+    const url: string = error.config?.url ?? "";
+    const isAuthForm = AUTH_FORM_PATHS.some((p) => url.includes(p));
+    if (error.response?.status === 401 && !isAuthForm && typeof window !== "undefined") {
       localStorage.removeItem("access_token");
       localStorage.removeItem("patient_id");
       localStorage.removeItem("patient_name");
@@ -88,6 +94,16 @@ export interface AnalysResponse {
   zone: Zone;
   reasons: TriageReason[];
   out_of_scope: { likely_condition: string | null } | null;
+  low_confidence?: boolean; // top-1 probability below the stop threshold: show the uncertainty notice
+}
+
+// The doctor's confirmed diagnosis for a diary day (latest row only)
+export interface DiagnosisFeedback {
+  diagnosis: string; // a condition name, or "other"
+  label_ru: string | null; // null for "other"
+  other_text: string | null;
+  zone: Zone;
+  created_at: string;
 }
 
 export interface HistoryEntry {
@@ -102,6 +118,7 @@ export interface HistoryEntry {
   patient_explanation: string | null;
   doctor_explanation: string | null;
   zone: Zone | null;
+  feedback: DiagnosisFeedback | null;
 }
 
 export interface Doctor {
@@ -156,9 +173,12 @@ export async function loginPatient(
 
 export type LocalizedText = { en: string; ru: string; kk: string };
 
+export const ALERT_CODES = ["stridor", "red_flag", "red_flag_combo", "llm_emergency"] as const;
+
 export interface CriticalAlert {
   level: "red" | "yellow";
-  message: string;
+  message: string; // Russian; use `code` to show the alert in the patient's language
+  code?: string; // one of ALERT_CODES when the backend sends it
 }
 
 export interface Finding {
@@ -166,10 +186,13 @@ export interface Finding {
   status: "present" | "absent" | "uncertain";
   quote: string; // the patient's own words (Groq); empty for Clef and regex
   votes: number;
-  source: "llm" | "safety_net" | "regex" | "bm25" | "clef";
+  source: "llm" | "safety_net" | "regex" | "bm25" | "clef" | "manual"; // "manual" = added from the catalog by the patient
   confidence: number | null; // Clef: probability of this status
   label: LocalizedText;
 }
+
+// Errors the chat shows as i18n keys (never raw English text)
+export type ExtractError = "aiServiceError" | "networkError";
 
 export interface ExtractSymptomsResponse {
   intake_id: number | null;
@@ -182,7 +205,7 @@ export interface ExtractSymptomsResponse {
   noSymptoms?: boolean;
   critical_alert: CriticalAlert | null;
   mode?: "llm" | "fallback" | "clef";
-  error?: string;
+  error?: ExtractError;
 }
 
 export async function extractSymptoms(text: string): Promise<ExtractSymptomsResponse> {
@@ -200,7 +223,7 @@ export async function extractSymptoms(text: string): Promise<ExtractSymptomsResp
       age: null,
       sex: null,
       critical_alert: null,
-      error: status ? `AI Service Error: ${status}` : "Network error",
+      error: status ? "aiServiceError" : "networkError",
     };
   }
 }
@@ -211,16 +234,28 @@ export async function sendAnalysis(
   age: number | null,
   sex: string | null,
   intakeId: number | null,
-  diagnoseSetup: string = "Nothing"
+  diagnoseSetup: string = "Nothing",
+  unknown: string[] = [] // "don't know" answers; not evidence, stored by the backend for logs
 ): Promise<AnalysResponse> {
   const { data } = await api.post<AnalysResponse>("/analys", {
     evidences,
     absent,
+    unknown,
     age,
     sex,
     intake_id: intakeId,
     diagnose_setup: diagnoseSetup,
   });
+  return data;
+}
+
+export interface EvidenceCatalogEntry {
+  code: string;
+  label: LocalizedText;
+}
+
+export async function getEvidenceCatalog(): Promise<{ evidences: EvidenceCatalogEntry[] }> {
+  const { data } = await api.get<{ evidences: EvidenceCatalogEntry[] }>("/evidence_catalog");
   return data;
 }
 
@@ -249,11 +284,15 @@ export async function getNextQuestions(
   age: number | null,
   sex: string | null,
   roundNum: number,
-  n: number = 3
+  n: number = 3,
+  intakeId: number | null = null, // only ties the backend's log lines to one case
+  unknown: string[] = [] // "don't know" answers: excluded from later questions, not evidence
 ): Promise<NextQuestionsResponse> {
   const { data } = await api.post<NextQuestionsResponse>("/next_questions", {
+    intake_id: intakeId,
     evidences,
     absent,
+    unknown,
     age,
     sex,
     round_num: roundNum,
@@ -320,7 +359,9 @@ export interface TriagePatient {
   last_disease: string;
   last_score: number;
   diag_date: string | null;
-  zone: Zone;
+  zone: Zone | null; // null = no diary day yet (not assessed)
+  last_day_id: number | null;
+  feedback_pending: boolean; // latest day has no doctor confirmation yet
 }
 
 export async function listPatientsTriage(): Promise<{ patients: TriagePatient[] }> {
@@ -362,6 +403,59 @@ export async function updateByDoctor(
     recept,
     disease_setup: diseaseSetup,
   });
+  return data;
+}
+
+export interface Condition {
+  name: string;
+  label_ru: string;
+  tier: Zone;
+}
+
+export async function getConditions(): Promise<{ conditions: Condition[] }> {
+  const { data } = await api.get<{ conditions: Condition[] }>("/conditions");
+  return data;
+}
+
+export interface DoctorFeedbackRequest {
+  day_id: number;
+  diagnosis: string; // a condition name, or "other" (then other_text is required)
+  other_text: string | null;
+  zone: Zone;
+  note: string | null;
+}
+
+export interface DoctorFeedbackResponse {
+  ok: boolean;
+  feedback_id: number;
+  agrees_top1: boolean;
+  in_top3: boolean;
+}
+
+export async function postDoctorFeedback(body: DoctorFeedbackRequest): Promise<DoctorFeedbackResponse> {
+  const { data } = await api.post<DoctorFeedbackResponse>("/doctor_feedback", body);
+  return data;
+}
+
+export interface FeedbackVersionStats {
+  n: number;
+  other: number;
+  top1: number; // 0..1
+  top3: number; // 0..1
+  zone_exact: number; // 0..1
+  under_triage: number;
+  over_triage: number;
+}
+
+export interface FeedbackStats {
+  n: number;
+  by_version: Record<string, FeedbackVersionStats>;
+  zone_matrix: Record<Zone, Record<Zone, number>>;
+  confusions: { model: string; doctor: string; count: number }[];
+}
+
+export async function getFeedbackStats(): Promise<FeedbackStats> {
+  const { data } = await api.get<FeedbackStats>("/feedback_stats");
   return data;
 }
 

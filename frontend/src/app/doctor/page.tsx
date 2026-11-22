@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import {
   Stethoscope, LogIn, LogOut, Loader2, Search, FileText, Edit3, Save,
   X, ChevronDown, ChevronUp, User, Calendar, Activity, ArrowLeft,
-  MapPin, Thermometer, AlertTriangle, Clock, CheckCircle, Download, Brain,
+  MapPin, Thermometer, AlertTriangle, Clock, CheckCircle, Download, Brain, HelpCircle,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -15,13 +15,16 @@ import { Textarea } from "@/components/ui/textarea";
 import {
   loginDoctor, listDoctors, getHistory, getPatientInfo, getDaySymptoms,
   updateByDoctor, listPatientsTriage, logout as apiLogout,
+  getConditions, postDoctorFeedback, getFeedbackStats,
   type Doctor, type HistoryEntry, type PatientInfo, type TriagePatient, type DaySymptoms,
+  type Condition, type FeedbackStats, type Zone,
 } from "@/lib/api";
 import { getDiseaseLabel } from "@/lib/diseaseWeights";
 import { SymptomTrend } from "@/components/SymptomTrend";
+import { MarkdownText } from "@/components/MarkdownText";
 import { generatePatientPDF } from "@/lib/pdfExport";
 import { getSymptomLabel, type SymptomCode } from "@/lib/symptoms";
-import { t, getLang, type Lang } from "@/lib/i18n";
+import { t, getLang, type Lang, type TranslationKey } from "@/lib/i18n";
 
 function parseIdFromCode(input: string): number | null {
   const trimmed = input.trim();
@@ -43,12 +46,64 @@ function makeCode(patientId: number): string {
   return `${ANIMALS[patientId % ANIMALS.length]}-${patientId}`;
 }
 
+// Same zone colors as the patient's DiagnosisCard
+const ZONE_STYLE: Record<Zone, { dot: string; text: string; short: TranslationKey }> = {
+  red: { dot: "bg-red-500", text: "text-red-700", short: "zoneShortRed" },
+  yellow: { dot: "bg-amber-400", text: "text-amber-700", short: "zoneShortYellow" },
+  green: { dot: "bg-emerald-500", text: "text-emerald-700", short: "zoneShortGreen" },
+};
+
+const FEEDBACK_OUTCOME_KEY: Record<"agrees" | "top3" | "miss", TranslationKey> = {
+  agrees: "fbAgrees",
+  top3: "fbInTop3",
+  miss: "fbMiss",
+};
+
+const SELECT_CLASS =
+  "h-9 w-full rounded-md border border-input bg-white px-3 text-sm shadow-xs outline-none focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px] disabled:opacity-50";
+
+function sortConditions(list: Condition[], lang: Lang): Condition[] {
+  return [...list].sort((a, b) =>
+    getDiseaseLabel(a.name, lang).localeCompare(getDiseaseLabel(b.name, lang), lang)
+  );
+}
+
+function pct(value: number): string {
+  return `${Math.round(value * 100)}%`;
+}
+
+function StatTile({ label, value, alert = false }: { label: string; value: string; alert?: boolean }) {
+  return (
+    <div className="rounded-lg border border-gray-100 bg-gray-50 px-3 py-2">
+      <p className="text-[11px] text-gray-500">{label}</p>
+      <p className={`text-lg font-semibold ${alert ? "text-red-600" : "text-gray-900"}`}>{value}</p>
+    </div>
+  );
+}
+
+// Ratios are weighted by rows per version, so the totals match the backend's counts
+function summarizeStats(stats: FeedbackStats) {
+  const versions = Object.values(stats.by_version);
+  const rows = versions.reduce((s, v) => s + v.n, 0);
+  const weighted = (key: "top1" | "top3" | "zone_exact") =>
+    rows === 0 ? 0 : versions.reduce((s, v) => s + v[key] * v.n, 0) / rows;
+  return {
+    top1: weighted("top1"),
+    top3: weighted("top3"),
+    zone: weighted("zone_exact"),
+    underTriage: versions.reduce((s, v) => s + v.under_triage, 0),
+    overTriage: versions.reduce((s, v) => s + v.over_triage, 0),
+  };
+}
+
 type View = "login" | "dashboard";
 
 export default function DoctorPage() {
   const router = useRouter();
-  const [lang] = useState<Lang>(getLang());
+  // "ru" on the server and first render; the stored language is read after mount
+  const [lang, setLangState] = useState<Lang>("ru");
   const [view, setView] = useState<View>("login");
+  const [pdfError, setPdfError] = useState("");
 
   const [doctors, setDoctors] = useState<Doctor[]>([]);
   const [selectedDoctorId, setSelectedDoctorId] = useState<number | null>(null);
@@ -68,6 +123,7 @@ export default function DoctorPage() {
   const [editingDayId, setEditingDayId] = useState<number | null>(null);
   const [editRecept, setEditRecept] = useState("");
   const [editDiagnosis, setEditDiagnosis] = useState("");
+  const [editError, setEditError] = useState("");
   const [saving, setSaving] = useState(false);
 
   const [expandedDayId, setExpandedDayId] = useState<number | null>(null);
@@ -76,6 +132,21 @@ export default function DoctorPage() {
 
   const [triagePatients, setTriagePatients] = useState<TriagePatient[]>([]);
   const [triageLoading, setTriageLoading] = useState(false);
+
+  // Confirm-diagnosis form (one day at a time)
+  const [conditions, setConditions] = useState<Condition[] | null>(null);
+  const [fbDayId, setFbDayId] = useState<number | null>(null);
+  const [fbDiagnosis, setFbDiagnosis] = useState("");
+  const [fbOther, setFbOther] = useState("");
+  const [fbZone, setFbZone] = useState<Zone | "">("");
+  const [fbNote, setFbNote] = useState("");
+  const [fbSaving, setFbSaving] = useState(false);
+  const [fbError, setFbError] = useState("");
+  const [fbOutcome, setFbOutcome] = useState<Record<number, "agrees" | "top3" | "miss">>({});
+
+  // Real-world accuracy panel; hidden when the stats request fails
+  const [feedbackStats, setFeedbackStats] = useState<FeedbackStats | null>(null);
+  const [accuracyOpen, setAccuracyOpen] = useState(false);
 
   const loadTriageData = async () => {
     setTriageLoading(true);
@@ -86,7 +157,17 @@ export default function DoctorPage() {
     finally { setTriageLoading(false); }
   };
 
+  const loadFeedbackStats = async () => {
+    try {
+      setFeedbackStats(await getFeedbackStats());
+    } catch { setFeedbackStats(null); }
+  };
+
   useEffect(() => {
+    const currentLang = getLang();
+    setLangState(currentLang);
+    document.documentElement.lang = currentLang;
+
     const stored = localStorage.getItem("doctor_id");
     const token = localStorage.getItem("access_token");
     if (stored && token) {
@@ -96,6 +177,7 @@ export default function DoctorPage() {
       setDoctorInfo({ doctor_id: id, full_name: name, specialty: spec, created_at: "" });
       setView("dashboard");
       loadTriageData();
+      loadFeedbackStats();
     }
     listDoctors()
       .then((resp) => setDoctors(resp.doctors))
@@ -120,6 +202,7 @@ export default function DoctorPage() {
         }
         setView("dashboard");
         loadTriageData();
+        loadFeedbackStats();
       } else {
         setLoginError(t("errorWrongPassword", lang));
       }
@@ -135,13 +218,14 @@ export default function DoctorPage() {
     apiLogout();
     setDoctorInfo(null); setView("login"); setHistory([]);
     setSearchedPatientId(null); setPatientInfo(null); setPin("");
+    setFeedbackStats(null); setFbDayId(null);
   };
 
   const searchPatientById = async (pid: number) => {
     if (pid <= 0) return;
     setHistoryLoading(true); setSearchedPatientId(pid);
     setPatientNotFound(false); setPatientInfo(null);
-    setDaySymptoms({}); setExpandedDayId(null);
+    setDaySymptoms({}); setExpandedDayId(null); setFbDayId(null);
     try {
       const [infoResp, histResp] = await Promise.all([getPatientInfo(pid), getHistory(pid)]);
       if (infoResp.found && infoResp.patient) setPatientInfo(infoResp.patient);
@@ -155,6 +239,12 @@ export default function DoctorPage() {
     const id = parseIdFromCode(patientIdInput);
     if (!id) return;
     searchPatientById(id);
+  };
+
+  const backToList = () => {
+    setSearchedPatientId(null); setPatientInfo(null); setPatientNotFound(false);
+    setHistory([]); setExpandedDayId(null); setEditingDayId(null); setFbDayId(null);
+    loadTriageData();
   };
 
   const handleExpand = async (dayId: number) => {
@@ -173,21 +263,98 @@ export default function DoctorPage() {
   const startEdit = (entry: HistoryEntry) => {
     setEditingDayId(entry.day_id);
     setEditRecept(entry.recept || "");
-    setEditDiagnosis(entry.disease_setup || "");
+    // "Nothing" is the backend's "no diagnosis set" marker: show an empty field instead
+    setEditDiagnosis(entry.disease_setup && entry.disease_setup !== "Nothing" ? entry.disease_setup : "");
+    setEditError("");
   };
 
-  const cancelEdit = () => { setEditingDayId(null); setEditRecept(""); setEditDiagnosis(""); };
+  const cancelEdit = () => {
+    setEditingDayId(null); setEditRecept(""); setEditDiagnosis(""); setEditError("");
+  };
 
   const handleSave = async (entry: HistoryEntry) => {
     if (!doctorInfo || !searchedPatientId) return;
     setSaving(true);
+    setEditError("");
     try {
-      await updateByDoctor(searchedPatientId, entry.day_id, doctorInfo.doctor_id, editRecept, editDiagnosis);
-      const resp = await getHistory(searchedPatientId);
-      setHistory(resp.history);
+      let ok = false;
+      try {
+        const resp = await updateByDoctor(
+          searchedPatientId, entry.day_id, doctorInfo.doctor_id, editRecept,
+          editDiagnosis.trim() || "Nothing"
+        );
+        ok = resp.ok === true;
+      } catch { ok = false; }
+      if (!ok) {
+        setEditError(t("saveFailed", lang));
+        return;
+      }
+      try {
+        const resp = await getHistory(searchedPatientId);
+        setHistory(resp.history);
+      } catch { /* saved; the list keeps its previous state until reload */ }
       setEditingDayId(null);
-    } catch { /* silent */ }
-    finally { setSaving(false); }
+    } finally { setSaving(false); }
+  };
+
+  const openFeedback = async (entry: HistoryEntry) => {
+    setFbDayId(entry.day_id);
+    setFbDiagnosis(entry.disease_predict); // model's top-1 preselected
+    setFbZone(entry.zone ?? ""); // model's zone preselected
+    setFbOther("");
+    setFbNote("");
+    setFbError("");
+    if (!conditions) {
+      try {
+        const resp = await getConditions();
+        setConditions(sortConditions(resp.conditions, lang));
+      } catch {
+        setFbError(t("saveFailed", lang));
+      }
+    }
+  };
+
+  const closeFeedback = () => {
+    setFbDayId(null);
+    setFbError("");
+  };
+
+  const handleFeedbackSave = async (entry: HistoryEntry) => {
+    if (!searchedPatientId || fbSaving || !fbDiagnosis || !fbZone) return;
+    const isOther = fbDiagnosis === "other";
+    if (isOther && !fbOther.trim()) return;
+    setFbSaving(true);
+    setFbError("");
+    let resp: Awaited<ReturnType<typeof postDoctorFeedback>>;
+    try {
+      resp = await postDoctorFeedback({
+        day_id: entry.day_id,
+        diagnosis: fbDiagnosis,
+        other_text: isOther ? fbOther.trim() : null,
+        zone: fbZone,
+        note: fbNote.trim() || null,
+      });
+    } catch {
+      setFbError(t("saveFailed", lang));
+      setFbSaving(false);
+      return;
+    }
+    if (resp.ok === false) {
+      setFbError(t("saveFailed", lang));
+      setFbSaving(false);
+      return;
+    }
+    setFbOutcome((prev) => ({
+      ...prev,
+      [entry.day_id]: resp.agrees_top1 ? "agrees" : resp.in_top3 ? "top3" : "miss",
+    }));
+    setFbDayId(null);
+    try {
+      const hist = await getHistory(searchedPatientId);
+      setHistory(hist.history);
+    } catch { /* saved; the entry refreshes on the next search */ }
+    loadFeedbackStats();
+    setFbSaving(false);
   };
 
   // value 1 = reported, 0 = denied (v2). Labels come from the backend; v1 rows
@@ -204,11 +371,11 @@ export default function DoctorPage() {
       .sort((a, b) => Number(a.denied) - Number(b.denied));
   }
 
-  // Triage zone renderer
+  // Triage zone renderer; zone null = patients with no diary day yet
   const renderTriageZone = (
-    zone: "red" | "yellow" | "green",
+    zone: Zone | null,
     icon: React.ReactNode,
-    titleKey: "redZone" | "yellowZone" | "greenZone",
+    titleKey: "redZone" | "yellowZone" | "greenZone" | "notAssessedGroup",
     colorClasses: { border: string; text: string; badge: string; btn: string },
   ) => {
     const patients = triagePatients.filter((p) => p.zone === zone);
@@ -226,7 +393,15 @@ export default function DoctorPage() {
               <CardContent className="py-3 px-4">
                 <div className="flex items-center justify-between">
                   <div>
-                    <p className="font-medium text-gray-900">{p.full_name}</p>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <p className="font-medium text-gray-900">{p.full_name}</p>
+                      {p.zone === null && (
+                        <Badge className="bg-gray-100 text-gray-600 border-0 text-[10px]">{t("notAssessed", lang)}</Badge>
+                      )}
+                      {p.feedback_pending && (
+                        <Badge variant="outline" className="border-indigo-200 text-indigo-600 text-[10px]">{t("feedbackPending", lang)}</Badge>
+                      )}
+                    </div>
                     <p className="text-xs text-gray-500">{makeCode(p.patient_id)} {p.city && `· ${p.city}`}</p>
                     {p.last_disease && (
                       <p className={`text-sm mt-1 ${colorClasses.text}`}>
@@ -242,6 +417,74 @@ export default function DoctorPage() {
               </CardContent>
             </Card>
           ))}
+        </div>
+      </div>
+    );
+  };
+
+  const renderFeedbackForm = (entry: HistoryEntry) => {
+    const isOther = fbDiagnosis === "other";
+    // Save only once the condition list is loaded, so the select can show the preselected value
+    const canSave = !fbSaving && !!conditions && !!fbDiagnosis && !!fbZone && (!isOther || fbOther.trim().length > 0);
+    return (
+      <div className="space-y-3 rounded-xl border border-indigo-200 bg-white p-3">
+        <div className="space-y-1">
+          <label className="text-xs font-medium text-gray-500">{t("fbDiagnosisLabel", lang)}</label>
+          <select
+            value={fbDiagnosis}
+            onChange={(e) => setFbDiagnosis(e.target.value)}
+            disabled={fbSaving || !conditions}
+            className={SELECT_CLASS}
+          >
+            {!fbDiagnosis && <option value="" disabled>—</option>}
+            {conditions?.map((c) => (
+              <option key={c.name} value={c.name}>{getDiseaseLabel(c.name, lang)}</option>
+            ))}
+            <option value="other">{t("otherDiagnosis", lang)}</option>
+          </select>
+        </div>
+        {isOther && (
+          <Input
+            maxLength={200}
+            placeholder={t("fbOtherPlaceholder", lang)}
+            value={fbOther}
+            onChange={(e) => setFbOther(e.target.value)}
+            className="bg-white"
+          />
+        )}
+        <div className="space-y-1">
+          <label className="text-xs font-medium text-gray-500">{t("zoneLabel", lang)}</label>
+          <select
+            value={fbZone}
+            onChange={(e) => setFbZone(e.target.value as Zone | "")}
+            disabled={fbSaving}
+            className={SELECT_CLASS}
+          >
+            {!fbZone && <option value="" disabled>—</option>}
+            {(["red", "yellow", "green"] as Zone[]).map((z) => (
+              <option key={z} value={z}>{t(ZONE_STYLE[z].short, lang)}</option>
+            ))}
+          </select>
+        </div>
+        <div className="space-y-1">
+          <label className="text-xs font-medium text-gray-500">{t("fbNoteLabel", lang)}</label>
+          <Textarea
+            maxLength={1000}
+            rows={2}
+            value={fbNote}
+            onChange={(e) => setFbNote(e.target.value)}
+            disabled={fbSaving}
+            className="bg-white"
+          />
+        </div>
+        {fbError && <p className="text-xs text-red-500">{fbError}</p>}
+        <div className="flex gap-2">
+          <Button size="sm" onClick={() => handleFeedbackSave(entry)} disabled={!canSave} className="bg-green-600 hover:bg-green-700 text-white">
+            {fbSaving ? <Loader2 className="h-3 w-3 mr-1 animate-spin" /> : <Save className="h-3 w-3 mr-1" />}{t("save", lang)}
+          </Button>
+          <Button size="sm" variant="outline" onClick={closeFeedback} disabled={fbSaving}>
+            <X className="h-3 w-3 mr-1" />{t("cancel", lang)}
+          </Button>
         </div>
       </div>
     );
@@ -327,6 +570,57 @@ export default function DoctorPage() {
       </header>
 
       <div className="max-w-3xl mx-auto p-4 space-y-6">
+        {feedbackStats && (
+          <Card>
+            <button
+              className="w-full text-left px-4 py-3 flex items-center justify-between hover:bg-gray-50 transition-colors rounded-xl"
+              onClick={() => setAccuracyOpen((open) => !open)}
+              aria-expanded={accuracyOpen}
+            >
+              <span className="flex items-center gap-2 text-sm font-semibold text-gray-900">
+                <Activity className="h-4 w-4 text-indigo-500" />{t("modelAccuracy", lang)}
+              </span>
+              {accuracyOpen ? <ChevronUp className="h-4 w-4 text-gray-400" /> : <ChevronDown className="h-4 w-4 text-gray-400" />}
+            </button>
+            {accuracyOpen && (
+              <CardContent className="pt-0 pb-4 space-y-3">
+                {feedbackStats.n === 0 ? (
+                  <p className="text-sm text-gray-500">{t("noFeedbackYet", lang)}</p>
+                ) : (() => {
+                  const s = summarizeStats(feedbackStats);
+                  return (
+                    <>
+                      <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                        <StatTile label={t("accuracyN", lang)} value={String(feedbackStats.n)} />
+                        <StatTile label={t("accuracyTop1", lang)} value={pct(s.top1)} />
+                        <StatTile label={t("accuracyTop3", lang)} value={pct(s.top3)} />
+                        <StatTile label={t("accuracyZone", lang)} value={pct(s.zone)} />
+                        <StatTile label={t("underTriage", lang)} value={String(s.underTriage)} alert={s.underTriage > 0} />
+                        <StatTile label={t("overTriage", lang)} value={String(s.overTriage)} />
+                      </div>
+                      {feedbackStats.confusions.length > 0 && (
+                        <div className="space-y-1">
+                          <p className="text-xs font-medium text-gray-500 uppercase tracking-wide">{t("confusions", lang)}</p>
+                          <ul className="space-y-1">
+                            {feedbackStats.confusions.map((c) => (
+                              <li key={`${c.model}-${c.doctor}`} className="text-sm text-gray-800 flex justify-between gap-2">
+                                <span className="min-w-0 truncate">
+                                  {getDiseaseLabel(c.model, lang)} → {getDiseaseLabel(c.doctor, lang)}
+                                </span>
+                                <span className="text-gray-500 shrink-0">×{c.count}</span>
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+                    </>
+                  );
+                })()}
+              </CardContent>
+            )}
+          </Card>
+        )}
+
         <Card>
           <CardContent className="pt-6">
             <div className="flex items-center gap-2 mb-4">
@@ -351,6 +645,8 @@ export default function DoctorPage() {
               { border: "border-l-amber-400", text: "text-amber-700", badge: "bg-amber-100 text-amber-700", btn: "text-amber-600 border-amber-200 hover:bg-amber-50" })}
             {renderTriageZone("green", <CheckCircle className="h-5 w-5 text-emerald-500" />, "greenZone",
               { border: "border-l-emerald-400", text: "text-emerald-700", badge: "bg-emerald-100 text-emerald-700", btn: "text-emerald-600 border-emerald-200 hover:bg-emerald-50" })}
+            {renderTriageZone(null, <HelpCircle className="h-5 w-5 text-gray-400" />, "notAssessedGroup",
+              { border: "border-l-gray-300", text: "text-gray-600", badge: "bg-gray-100 text-gray-600", btn: "text-gray-600 border-gray-200 hover:bg-gray-50" })}
           </div>
         )}
 
@@ -360,6 +656,12 @@ export default function DoctorPage() {
 
         {patientNotFound && !historyLoading && (
           <Card><CardContent className="py-8 text-center text-gray-500 text-sm">{t("patientNotFound", lang)}</CardContent></Card>
+        )}
+
+        {searchedPatientId !== null && (
+          <Button variant="ghost" size="sm" className="-ml-2 text-gray-600" onClick={backToList}>
+            {t("backToList", lang)}
+          </Button>
         )}
 
         {patientInfo && (
@@ -382,11 +684,20 @@ export default function DoctorPage() {
                     <Badge variant="secondary" className="text-xs">{history.length} {t("diaryEntries", lang)}</Badge>
                     {history.length > 0 && (
                       <Button size="sm" variant="outline" className="text-xs text-indigo-600 border-indigo-200 hover:bg-indigo-50"
-                        onClick={() => generatePatientPDF(patientInfo, history, doctorInfo?.full_name || "", lang)}>
+                        onClick={async () => {
+                          setPdfError("");
+                          try {
+                            await generatePatientPDF(patientInfo, history, doctorInfo?.full_name || "", lang);
+                          } catch (err) {
+                            console.error("PDF export failed", err);
+                            setPdfError(t("saveFailed", lang));
+                          }
+                        }}>
                         <Download className="h-3 w-3 mr-1" />{t("downloadPdf", lang)}
                       </Button>
                     )}
                   </div>
+                  {pdfError && <p className="mt-1 text-xs text-red-500">{pdfError}</p>}
                 </div>
               </div>
             </CardContent>
@@ -412,9 +723,17 @@ export default function DoctorPage() {
               history.map((entry) => {
                 const isExpanded = expandedDayId === entry.day_id;
                 const isEditing = editingDayId === entry.day_id;
+                const isFeedbackOpen = fbDayId === entry.day_id;
                 const diseaseLabel = getDiseaseLabel(entry.disease_predict, lang);
                 const daySymptomList = getDaySymptomList(entry.day_id);
                 const isLoadingSymptoms = symptomsLoading === entry.day_id;
+                const feedback = entry.feedback;
+                const feedbackLabel = feedback
+                  ? feedback.diagnosis === "other"
+                    ? feedback.other_text || t("otherDiagnosis", lang)
+                    : getDiseaseLabel(feedback.diagnosis, lang)
+                  : "";
+                const outcome = fbOutcome[entry.day_id];
 
                 return (
                   <Card key={entry.day_id} className="overflow-hidden">
@@ -467,9 +786,31 @@ export default function DoctorPage() {
                           )}
                         </div>
 
-                        <div className="space-y-1">
+                        <div className="space-y-2">
                           <p className="text-xs font-medium text-gray-500 uppercase tracking-wide">{t("preliminaryDiagnosis", lang)}</p>
                           <p className="text-sm text-gray-900">{diseaseLabel}</p>
+                          {feedback && (
+                            <div className="flex flex-wrap items-center gap-2">
+                              <Badge className="text-xs bg-green-100 text-green-700 border-0">
+                                {t("confirmedAs", lang).replace("{label}", feedbackLabel)}
+                              </Badge>
+                              <span className={`inline-flex items-center gap-1 text-xs ${ZONE_STYLE[feedback.zone].text}`}>
+                                <span className={`h-2 w-2 rounded-full ${ZONE_STYLE[feedback.zone].dot}`} />
+                                {t(ZONE_STYLE[feedback.zone].short, lang)}
+                              </span>
+                            </div>
+                          )}
+                          {outcome && (
+                            <p className="text-xs text-gray-600">{t(FEEDBACK_OUTCOME_KEY[outcome], lang)}</p>
+                          )}
+                          {isFeedbackOpen ? (
+                            renderFeedbackForm(entry)
+                          ) : (
+                            <Button size="sm" variant="outline" onClick={() => openFeedback(entry)}
+                              className="text-indigo-600 border-indigo-200 hover:bg-indigo-50">
+                              {feedback ? t("changeDiagnosis", lang) : t("confirmDiagnosis", lang)}
+                            </Button>
+                          )}
                         </div>
 
                         {entry.doctor_explanation && (
@@ -477,9 +818,10 @@ export default function DoctorPage() {
                             <p className="text-xs font-medium text-indigo-600 uppercase tracking-wide flex items-center gap-1.5">
                               <Brain className="h-4 w-4" />{t("aiClinicalAnalysis", lang)}
                             </p>
-                            <div className="text-sm text-gray-800 leading-relaxed whitespace-pre-wrap prose prose-sm max-w-none prose-strong:text-indigo-700 prose-li:my-0.5">
-                              {entry.doctor_explanation}
-                            </div>
+                            <MarkdownText
+                              text={entry.doctor_explanation}
+                              className="text-sm text-gray-800 leading-relaxed space-y-2"
+                            />
                             <p className="text-xs text-indigo-400 italic mt-2">{t("aiDisclaimer", lang)}</p>
                           </div>
                         )}
@@ -512,6 +854,8 @@ export default function DoctorPage() {
                             <p className="text-sm text-indigo-600">{entry.doctor_name}</p>
                           </div>
                         )}
+
+                        {isEditing && editError && <p className="text-xs text-red-500">{editError}</p>}
 
                         <div className="flex gap-2 pt-2">
                           {isEditing ? (

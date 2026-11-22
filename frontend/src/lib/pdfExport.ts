@@ -3,13 +3,42 @@ import type { PatientInfo, HistoryEntry } from "./api";
 import { getDiseaseLabel } from "./diseaseWeights";
 import { t, type Lang } from "./i18n";
 
-export function generatePatientPDF(
+// jsPDF's built-in fonts have no Cyrillic, so the report embeds Noto Sans (public/fonts).
+// Only the regular face is bundled: there is no bold, so headings use a larger size instead.
+const FONT_FILE = "NotoSans-Regular.ttf";
+const FONT_NAME = "NotoSans";
+let fontBase64: string | null = null;
+
+function arrayBufferToBase64(buffer: ArrayBuffer): string {
+  const bytes = new Uint8Array(buffer);
+  const CHUNK = 0x8000; // String.fromCharCode with a spread needs bounded argument lists
+  let binary = "";
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
+  }
+  return btoa(binary);
+}
+
+async function loadFontBase64(): Promise<string> {
+  if (fontBase64 === null) {
+    const res = await fetch(`/fonts/${FONT_FILE}`);
+    if (!res.ok) throw new Error(`Font request failed: ${res.status}`);
+    fontBase64 = arrayBufferToBase64(await res.arrayBuffer());
+  }
+  return fontBase64;
+}
+
+export async function generatePatientPDF(
   patientInfo: PatientInfo,
   history: HistoryEntry[],
   doctorName: string,
   lang: Lang = "ru"
-): void {
+): Promise<void> {
+  const font = await loadFontBase64();
   const doc = new jsPDF();
+  doc.addFileToVFS(FONT_FILE, font);
+  doc.addFont(FONT_FILE, FONT_NAME, "normal");
+  doc.setFont(FONT_NAME, "normal");
   const pageWidth = doc.internal.pageSize.getWidth();
   let y = 20;
 

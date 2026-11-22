@@ -36,7 +36,8 @@ async function cropTopOfImage(file: File, cropPercent = 0.15): Promise<File> {
 export default function LabPage() {
   const router = useRouter();
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const [lang] = useState<Lang>(getLang());
+  // "ru" on the server and first render; the stored language is read after mount
+  const [lang, setLangState] = useState<Lang>("ru");
 
   const [patientId, setPatientId] = useState<number | null>(null);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
@@ -45,11 +46,16 @@ export default function LabPage() {
   const [currentResult, setCurrentResult] = useState<LabResult | null>(null);
   const [history, setHistory] = useState<LabResult[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyError, setHistoryError] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [dragOver, setDragOver] = useState(false);
   const [cropEnabled, setCropEnabled] = useState(true);
 
   useEffect(() => {
+    const currentLang = getLang();
+    setLangState(currentLang);
+    document.documentElement.lang = currentLang;
+
     const id = localStorage.getItem("patient_id");
     const token = localStorage.getItem("access_token");
     if (!id || !token) {
@@ -65,8 +71,10 @@ export default function LabPage() {
     try {
       const resp = await getLabResults(patientId);
       setHistory(resp.results);
+      setHistoryError(false);
     } catch {
-      // silently fail
+      // Shown as "could not load" (not as "no analyses")
+      setHistoryError(true);
     } finally {
       setHistoryLoading(false);
     }
@@ -87,10 +95,17 @@ export default function LabPage() {
       return;
     }
     setError(null);
+    let displayFile: File;
+    try {
+      displayFile = cropEnabled ? await cropTopOfImage(file) : file;
+    } catch (err) {
+      console.error("Lab image processing failed", err);
+      setError(t("labImageError", lang));
+      return;
+    }
     setSelectedFile(file);
     setCurrentResult(null);
 
-    const displayFile = cropEnabled ? await cropTopOfImage(file) : file;
     const reader = new FileReader();
     reader.onload = (e) => setPreview(e.target?.result as string);
     reader.readAsDataURL(displayFile);
@@ -119,11 +134,9 @@ export default function LabPage() {
       setCurrentResult(result);
       loadHistory();
     } catch (err: unknown) {
-      const msg =
-        err && typeof err === "object" && "response" in err
-          ? (err as { response?: { data?: { detail?: string } } }).response?.data?.detail
-          : undefined;
-      setError(msg || t("failedRecognize", lang));
+      // The backend detail is for developers; the patient sees a translated message
+      console.error("Lab upload failed", err);
+      setError(t("labUploadFailed", lang));
     } finally {
       setIsAnalyzing(false);
     }
@@ -140,10 +153,15 @@ export default function LabPage() {
     const next = !cropEnabled;
     setCropEnabled(next);
     if (selectedFile) {
-      const displayFile = next ? await cropTopOfImage(selectedFile) : selectedFile;
-      const reader = new FileReader();
-      reader.onload = (e) => setPreview(e.target?.result as string);
-      reader.readAsDataURL(displayFile);
+      try {
+        const displayFile = next ? await cropTopOfImage(selectedFile) : selectedFile;
+        const reader = new FileReader();
+        reader.onload = (e) => setPreview(e.target?.result as string);
+        reader.readAsDataURL(displayFile);
+      } catch (err) {
+        console.error("Lab image processing failed", err);
+        setError(t("labImageError", lang));
+      }
     }
   }
 
@@ -191,6 +209,17 @@ export default function LabPage() {
             onDragOver={handleDragOver}
             onDragLeave={() => setDragOver(false)}
             onClick={() => !selectedFile && fileInputRef.current?.click()}
+            role="button"
+            tabIndex={0}
+            aria-label={t("dragPhotoHere", lang)}
+            onKeyDown={(e) => {
+              // Only when the dropzone itself has focus, not a button inside it
+              if (e.target !== e.currentTarget) return;
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                if (!selectedFile) fileInputRef.current?.click();
+              }
+            }}
           >
             <input
               ref={fileInputRef}
@@ -282,7 +311,7 @@ export default function LabPage() {
 
         {history.length === 0 && !historyLoading && !currentResult && (
           <p className="text-center text-sm text-gray-400 py-8">
-            {t("noAnalysesYet", lang)}
+            {historyError ? t("labLoadFailed", lang) : t("noAnalysesYet", lang)}
           </p>
         )}
       </main>

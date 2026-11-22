@@ -16,9 +16,13 @@ import { Badge } from "@/components/ui/badge";
 import { PieChart } from "@/components/PieChart";
 import type { DiagnosisResult, TriageReason } from "@/lib/types";
 import { t, getLang, type Lang, type TranslationKey } from "@/lib/i18n";
+import { getDiseaseDoctor, getDiseaseRecommendation } from "@/lib/diseaseWeights";
+
+// The /analys result as the chat keeps it: low_confidence arrives as lowConfidence
+export type DiagnosisCardData = DiagnosisResult & { lowConfidence?: boolean };
 
 interface DiagnosisCardProps {
-  diagnosis: DiagnosisResult;
+  diagnosis: DiagnosisCardData;
   lang?: Lang;
 }
 
@@ -43,10 +47,35 @@ function urgencyReasons(diagnosis: DiagnosisResult, l: Lang): string[] {
   return Array.from(new Set(texts)).slice(0, 3);
 }
 
-function zoneToUrgency(zone?: "red" | "yellow" | "green"): "low" | "medium" | "high" {
+/**
+ * Doctor and recommendation text for the patient's language.
+ * The backend writes both in Russian only, so for en/kk they come from the
+ * translated table (diseaseWeights.ts); the backend text stays the fallback.
+ */
+function localizedAdvice(diagnosis: DiagnosisResult, l: Lang): { doctor: string; recommendation: string } {
+  if (l === "ru") {
+    return { doctor: diagnosis.doctor, recommendation: diagnosis.recommendation };
+  }
+  const doctor = getDiseaseDoctor(diagnosis.diseaseName, l) || diagnosis.doctor;
+  let recommendation = getDiseaseRecommendation(diagnosis.diseaseName, l) || diagnosis.recommendation;
+  const notes: string[] = [];
+  if (diagnosis.zone === "red") notes.push(t("urgentPrefix", l));
+  if (diagnosis.outOfScope) {
+    const likely = diagnosis.outOfScope.likely_condition
+      ? ` (${t("possibly", l)}: ${diagnosis.outOfScope.likely_condition})`
+      : "";
+    notes.push(t("outOfScopeNote", l).replace("{likely}", likely));
+  }
+  if (notes.length > 0) recommendation = `${notes.join(" ")} ${recommendation}`;
+  return { doctor, recommendation };
+}
+
+// A missing zone is "unknown", never "low": it must not look like a green result
+function zoneToUrgency(zone?: "red" | "yellow" | "green"): "low" | "medium" | "high" | "unknown" {
   if (zone === "red") return "high";
   if (zone === "yellow") return "medium";
-  return "low";
+  if (zone === "green") return "low";
+  return "unknown";
 }
 
 export function DiagnosisCard({ diagnosis, lang }: DiagnosisCardProps) {
@@ -69,10 +98,16 @@ export function DiagnosisCard({ diagnosis, lang }: DiagnosisCardProps) {
       badge: "bg-red-100 text-red-700",
       label: t("highUrgency", l),
     },
+    unknown: {
+      color: "bg-gray-50 border-gray-300",
+      badge: "bg-gray-200 text-gray-700",
+      label: t("zoneUnknown", l),
+    },
   };
 
   const config = urgencyConfig[urgency];
   const reasons = urgencyReasons(diagnosis, l);
+  const advice = localizedAdvice(diagnosis, l);
 
   return (
     <Card
@@ -120,6 +155,14 @@ export function DiagnosisCard({ diagnosis, lang }: DiagnosisCardProps) {
             {diagnosis.diseaseLabel}
           </h3>
         </div>
+
+        {/* Model is unsure: the amber notice sits above the top-3 chart; icon + text, not color only */}
+        {diagnosis.lowConfidence && (
+          <div role="note" className="flex items-start gap-3 bg-amber-50 rounded-xl p-3 border border-amber-300">
+            <AlertTriangle className="h-5 w-5 text-amber-600 mt-0.5 shrink-0" aria-hidden="true" />
+            <p className="text-sm text-amber-900 leading-relaxed">{t("lowConfidenceNote", l)}</p>
+          </div>
+        )}
 
         {/* Pie chart */}
         {diagnosis.slices && diagnosis.slices.length > 0 && (
@@ -171,7 +214,7 @@ export function DiagnosisCard({ diagnosis, lang }: DiagnosisCardProps) {
               {t("recommendedDoctor", l)}
             </p>
             <p className="text-sm font-semibold text-gray-800">
-              {diagnosis.doctor}
+              {advice.doctor}
             </p>
           </div>
           <ChevronRight className="h-4 w-4 text-gray-400 ml-auto mt-0.5" />
@@ -211,7 +254,7 @@ export function DiagnosisCard({ diagnosis, lang }: DiagnosisCardProps) {
           <div>
             <p className="text-xs text-gray-500 font-medium">{t("recommendations", l)}</p>
             <p className="text-sm text-gray-700 leading-relaxed">
-              {diagnosis.recommendation}
+              {advice.recommendation}
             </p>
           </div>
         </div>

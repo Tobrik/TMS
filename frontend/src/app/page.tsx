@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import {
   HeartPulse,
@@ -44,7 +44,14 @@ const LANG_LABELS: Record<Lang, string> = { ru: "RU", en: "EN", kk: "KZ" };
 
 export default function LoginPage() {
   const router = useRouter();
-  const [lang, setLangState] = useState<Lang>(getLang());
+  // "ru" on the server and first render; the stored language is read after mount
+  const [lang, setLangState] = useState<Lang>("ru");
+
+  useEffect(() => {
+    const currentLang = getLang();
+    setLangState(currentLang);
+    document.documentElement.lang = currentLang;
+  }, []);
 
   const [regName, setRegName] = useState("");
   const [regCity, setRegCity] = useState("");

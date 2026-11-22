@@ -35,6 +35,9 @@ export function LabResultCard({ result, lang }: Props) {
     low: { label: t("statusLow", l), className: "bg-amber-100 text-amber-700 border-amber-200" },
   };
 
+  // Unknown or empty status is neutral, never shown as "normal"
+  const unknownStatus = { label: t("labStatusUnknown", l), className: "bg-gray-100 text-gray-600 border-gray-200" };
+
   return (
     <Card className="border border-gray-200 shadow-sm">
       <CardHeader className="pb-3">
@@ -61,7 +64,7 @@ export function LabResultCard({ result, lang }: Props) {
               </thead>
               <tbody>
                 {results.map((item, idx) => {
-                  const cfg = statusConfig[item.status] || statusConfig.normal;
+                  const cfg = statusConfig[item.status] || unknownStatus;
                   return (
                     <tr key={idx} className="border-b border-gray-50 last:border-0">
                       <td className="py-2 pr-3 text-gray-800">{item.name}</td>
