@@ -62,6 +62,13 @@ require_patient = require_role("patient")
 require_doctor = require_role("doctor")
 
 
+async def require_real_doctor(user: dict = Depends(require_doctor)):
+    """A doctor token that is not a demo session."""
+    if user.get("demo"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="demo_forbidden")
+    return user
+
+
 async def require_patient_or_doctor(user: dict = Depends(get_current_user)):
     if user.get("role") not in ("patient", "doctor"):
         raise HTTPException(

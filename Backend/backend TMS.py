@@ -15,9 +15,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, constr, field_validator, model_validator
-from typing import Optional, List, Dict, Any, Tuple
+from typing import Optional, List, Dict, Any, Tuple, Literal
 import re
-import psycopg2, psycopg2.extras, hashlib, secrets
+import psycopg2, psycopg2.extras, psycopg2.errors, hashlib, secrets
 try:
     from PIL import Image, ImageFilter
     HAS_PILLOW = True
@@ -29,6 +29,7 @@ from auth import (
     get_current_user,
     require_patient,
     require_doctor,
+    require_real_doctor,
     require_patient_or_doctor,
 )
 from crypto_utils import encrypt_field, decrypt_field
@@ -89,9 +90,61 @@ class LoginPatientRequest(BaseModel):
     patient_id: int = Field(..., gt=0)
     password: constr(min_length=1, max_length=64)
 
+def _strong_password(v: str) -> str:
+    if not re.search(r'[A-Za-z]', v):
+        raise ValueError("Пароль должен содержать хотя бы одну букву")
+    if not re.search(r'\d', v):
+        raise ValueError("Пароль должен содержать хотя бы одну цифру")
+    return v
+
+_USERNAME_RE = re.compile(r"^[a-z0-9._-]{3,32}$")
+
+def _clean_username(v: str) -> str:
+    v = v.strip().lower()
+    if not _USERNAME_RE.fullmatch(v):
+        raise ValueError("username: 3-32 chars, a-z 0-9 . _ -")
+    return v
+
 class LoginDoctorRequest(BaseModel):
-    doctor_id: int = Field(..., gt=0)
+    username: Optional[str] = Field(default=None, min_length=1, max_length=64)
+    doctor_id: Optional[int] = Field(default=None, gt=0)
     password: constr(min_length=1, max_length=64)
+
+    @model_validator(mode="after")
+    def exactly_one_identifier(self):
+        if (self.username is None) == (self.doctor_id is None):
+            raise ValueError("send exactly one of username or doctor_id")
+        return self
+
+class DemoPatientRequest(BaseModel):
+    name: Optional[str] = Field(default=None, max_length=200)
+    lang: Literal["ru", "kk", "en"] = "ru"
+
+class RegisterDoctorRequest(BaseModel):
+    invite_code: str = Field(..., min_length=1, max_length=64)
+    username: str = Field(..., max_length=64)
+    full_name: str = Field(..., min_length=1, max_length=200)
+    specialty: str = Field(..., min_length=1, max_length=200)
+    password: str = Field(..., min_length=8, max_length=64)
+
+    @field_validator("username")
+    @classmethod
+    def username_rules(cls, v: str) -> str:
+        return _clean_username(v)
+
+    @field_validator("password")
+    @classmethod
+    def password_strength(cls, v: str) -> str:
+        return _strong_password(v)
+
+class ChangePasswordRequest(BaseModel):
+    old_password: constr(min_length=1, max_length=64)
+    new_password: str = Field(..., min_length=8, max_length=64)
+
+    @field_validator("new_password")
+    @classmethod
+    def password_strength(cls, v: str) -> str:
+        return _strong_password(v)
 
 class LoginResponse(BaseModel):
     login: bool
@@ -100,6 +153,8 @@ class LoginResponse(BaseModel):
 
 class DoctorInfo(BaseModel):
     doctor_id: int
+    username: Optional[str] = None
+    is_demo: bool = False
     full_name: str
     specialty: str
     created_at: Optional[str] = None
@@ -520,39 +575,78 @@ def create_tables():
             model_version TEXT        -- analysis_json["model_version"] or "v2.0"
         );
         CREATE INDEX IF NOT EXISTS idx_feedback_day ON diagnosis_feedback(day_id, feedback_id);
+
+        -- Doctor accounts, demo flags, invites (all idempotent)
+        ALTER TABLE doctors  ADD COLUMN IF NOT EXISTS username TEXT;
+        ALTER TABLE doctors  ADD COLUMN IF NOT EXISTS is_demo BOOLEAN NOT NULL DEFAULT FALSE;
+        ALTER TABLE patients ADD COLUMN IF NOT EXISTS is_demo BOOLEAN NOT NULL DEFAULT FALSE;
+        ALTER TABLE patients ADD COLUMN IF NOT EXISTS demo_seed TEXT;
+        UPDATE doctors SET username = 'doctor' || doctor_id WHERE username IS NULL;
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_doctors_username ON doctors(username);
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_patients_demo_seed ON patients(demo_seed) WHERE demo_seed IS NOT NULL;
+        CREATE TABLE IF NOT EXISTS doctor_invites (
+            code_hash  TEXT PRIMARY KEY,
+            created_by INTEGER REFERENCES doctors(doctor_id) ON DELETE SET NULL,
+            created_at TIMESTAMP DEFAULT NOW(),
+            expires_at TIMESTAMP NOT NULL,
+            used_by    INTEGER REFERENCES doctors(doctor_id) ON DELETE SET NULL,
+            used_at    TIMESTAMP
+        );
         """)
         conn.commit()
     finally:
         conn.close()
 
+RESERVED_USERNAME = "demo"  # the demo doctor's username; no real account may take it
+
+def parse_doctor_seeds(raw: str) -> List[Tuple[Optional[str], str, str, str]]:
+    """DOCTOR_SEEDS -> [(username or None, full_name, specialty, password)].
+    `username|Full Name|Specialty|password` or the legacy `Full Name|Specialty|password`."""
+    out = []
+    for entry in raw.split(";"):
+        entry = entry.strip()
+        if not entry:
+            continue
+        parts = [p.strip() for p in entry.split("|")]
+        try:
+            if len(parts) == 4:
+                username = _clean_username(parts[0])
+                if username == RESERVED_USERNAME:
+                    raise ValueError("reserved username")
+                parts = parts[1:]
+            elif len(parts) == 3:
+                username = None
+            else:
+                raise ValueError("wrong number of parts")
+            if not all(parts):
+                raise ValueError("empty field")
+        except ValueError:
+            logger.warning("Skipping malformed DOCTOR_SEEDS entry")
+            continue
+        out.append((username, parts[0], parts[1], parts[2]))
+    return out
+
 def seed_doctors():
     conn = connect()
     try:
         cur = conn.cursor()
-        cur.execute("SELECT COUNT(*) FROM doctors")
+        cur.execute("SELECT COUNT(*) FROM doctors WHERE NOT is_demo")
         if cur.fetchone()[0] > 0:
-            conn.close()
             return
 
         seeds_raw = os.environ.get("DOCTOR_SEEDS", "")
         if not seeds_raw:
             logger.warning("DOCTOR_SEEDS env variable not set — no doctors seeded")
-            conn.close()
             return
 
-        for entry in seeds_raw.split(";"):
-            entry = entry.strip()
-            if not entry:
-                continue
-            parts = entry.split("|")
-            if len(parts) != 3:
-                logger.warning("Skipping malformed DOCTOR_SEEDS entry: %s", entry)
-                continue
-            full_name, spec, pwd = parts[0].strip(), parts[1].strip(), parts[2].strip()
+        for username, full_name, spec, pwd in parse_doctor_seeds(seeds_raw):
             cur.execute("""
-                INSERT INTO doctors(full_name, specialty, password_hash)
-                VALUES (%s,%s,%s)
-            """, (encrypt_field(full_name), encrypt_field(spec), hash_password(pwd)))
+                INSERT INTO doctors(full_name, specialty, password_hash, username)
+                VALUES (%s,%s,%s,%s) RETURNING doctor_id
+            """, (encrypt_field(full_name), encrypt_field(spec), hash_password(pwd), username))
+            doctor_id = cur.fetchone()[0]
+            if username is None:
+                cur.execute("UPDATE doctors SET username = 'doctor' || doctor_id WHERE doctor_id = %s", (doctor_id,))
         conn.commit()
         logger.info("Doctors seeded successfully")
     finally:
@@ -586,15 +680,17 @@ def log_in_patient(patient_id: int, password_5: str) -> bool:
     finally:
         conn.close()
 
-def log_in_doctor(doctor_id: int, password_5: str) -> bool:
+def find_doctor_for_login(username: Optional[str], doctor_id: Optional[int]) -> Optional[Tuple[int, str, bool]]:
     conn = connect()
     try:
         cur = conn.cursor()
-        cur.execute("SELECT password_hash FROM doctors WHERE doctor_id = %s", (doctor_id,))
+        if username is not None:
+            cur.execute("SELECT doctor_id, password_hash, is_demo FROM doctors WHERE username = %s",
+                        (username.strip().lower(),))
+        else:
+            cur.execute("SELECT doctor_id, password_hash, is_demo FROM doctors WHERE doctor_id = %s", (doctor_id,))
         row = cur.fetchone()
-        if not row:
-            return False
-        return verify_password(password_5, row[0])
+        return (row[0], row[1], row[2]) if row else None
     finally:
         conn.close()
 
@@ -602,11 +698,80 @@ def get_doctor_info(doctor_id: int) -> Optional[Dict[str, Any]]:
     conn = connect()
     try:
         cur = conn.cursor()
-        cur.execute("SELECT doctor_id, full_name, specialty, created_at FROM doctors WHERE doctor_id = %s", (doctor_id,))
+        cur.execute("""SELECT doctor_id, username, full_name, specialty, is_demo, created_at
+                       FROM doctors WHERE doctor_id = %s""", (doctor_id,))
         row = cur.fetchone()
         if not row:
             return None
-        return {"doctor_id": row[0], "full_name": decrypt_field(row[1]), "specialty": decrypt_field(row[2]), "created_at": str(row[3])}
+        return {"doctor_id": row[0], "username": row[1], "full_name": decrypt_field(row[2]),
+                "specialty": decrypt_field(row[3]), "is_demo": row[4], "created_at": str(row[5])}
+    finally:
+        conn.close()
+
+_INVITE_ALPHABET = "23456789ABCDEFGHJKMNPQRSTUVWXYZ"
+
+def _invite_hash(code: str) -> str:
+    normalised = re.sub(r"[\s-]", "", code).upper()
+    return hashlib.sha256(normalised.encode("utf-8")).hexdigest()
+
+def create_invite(doctor_id: int) -> Dict[str, str]:
+    raw = "".join(secrets.choice(_INVITE_ALPHABET) for _ in range(8))
+    code = f"TMS-{raw[:4]}-{raw[4:]}"
+    conn = connect()
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            INSERT INTO doctor_invites(code_hash, created_by, expires_at)
+            VALUES (%s, %s, NOW() + INTERVAL '7 days') RETURNING expires_at
+        """, (_invite_hash(code), doctor_id))
+        expires_at = cur.fetchone()[0]
+        conn.commit()
+        return {"code": code, "expires_at": expires_at.replace(microsecond=0).isoformat()}
+    finally:
+        conn.close()
+
+def register_doctor_with_invite(body: "RegisterDoctorRequest") -> Optional[int]:
+    """New doctor id, or None when the invite is unknown, used or expired.
+    Raises psycopg2.errors.UniqueViolation when the username is taken (invite stays unused)."""
+    conn = connect()
+    try:
+        cur = conn.cursor()
+        code_hash = _invite_hash(body.invite_code)
+        # Atomic claim: only one concurrent request can flip used_at.
+        cur.execute("""
+            UPDATE doctor_invites SET used_at = NOW()
+            WHERE code_hash = %s AND used_by IS NULL AND used_at IS NULL AND expires_at > NOW()
+        """, (code_hash,))
+        if cur.rowcount != 1:
+            conn.rollback()
+            return None
+        cur.execute("""
+            INSERT INTO doctors(full_name, specialty, password_hash, username)
+            VALUES (%s,%s,%s,%s) RETURNING doctor_id
+        """, (encrypt_field(body.full_name.strip()), encrypt_field(body.specialty.strip()),
+              hash_password(body.password), body.username))
+        doctor_id = cur.fetchone()[0]
+        cur.execute("UPDATE doctor_invites SET used_by = %s WHERE code_hash = %s", (doctor_id, code_hash))
+        conn.commit()
+        return doctor_id
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+def change_doctor_password(doctor_id: int, old_password: str, new_password: str) -> bool:
+    conn = connect()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT password_hash FROM doctors WHERE doctor_id = %s", (doctor_id,))
+        row = cur.fetchone()
+        if not row or not verify_password(old_password, row[0]):
+            return False
+        cur.execute("UPDATE doctors SET password_hash = %s WHERE doctor_id = %s",
+                    (hash_password(new_password), doctor_id))
+        conn.commit()
+        return True
     finally:
         conn.close()
 
@@ -649,6 +814,7 @@ def insert_disease(
     zone: Optional[str] = None,
     analysis: Optional[dict] = None,
     intake_id: Optional[int] = None,
+    created_at=None,
 ) -> int:
     """disease_predict is the top-1 disease name and score its probability
     (v1 stored the space-joined top-3 names and their average)."""
@@ -675,9 +841,10 @@ def insert_disease(
                 doctor_explanation,
                 zone,
                 analysis_json,
-                intake_id
+                intake_id,
+                created_at
             )
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING day_id
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s, COALESCE(%s::timestamptz, NOW())) RETURNING day_id
         """, (
             patient_id,
             doctor_id,
@@ -690,6 +857,7 @@ def insert_disease(
             zone,
             encrypt_field(json.dumps(analysis, ensure_ascii=False)) if analysis is not None else None,
             intake_id,
+            created_at,
         ))
 
         day_id = cur.fetchone()[0]
@@ -768,18 +936,19 @@ def update_recept_last_day(patient_id: int, recept_text: str) -> bool:
     update_recept(d, recept_text)
     return True
 
-def list_doctors_db() -> List[Dict[str, Any]]:
+def list_doctors_db(is_demo: bool = False) -> List[Dict[str, Any]]:
     conn = connect()
     try:
         cur = conn.cursor()
         cur.execute("""
-            SELECT doctor_id, full_name, specialty, created_at
+            SELECT doctor_id, username, full_name, specialty, created_at
             FROM doctors
+            WHERE is_demo = %s
             ORDER BY doctor_id
-        """)
+        """, (is_demo,))
         rows = cur.fetchall()
         return [
-            {"doctor_id": r[0], "full_name": decrypt_field(r[1]), "specialty": decrypt_field(r[2]), "created_at": str(r[3])}
+            {"doctor_id": r[0], "username": r[1], "full_name": decrypt_field(r[2]), "specialty": decrypt_field(r[3]), "created_at": str(r[4])}
             for r in rows
         ]
     finally:
@@ -935,10 +1104,17 @@ _ZONE_RANK = {"green": 0, "yellow": 1, "red": 2}
 
 
 # The latest doctor feedback row per diary day: the only rows the accuracy numbers count.
+# Feedback on demo patients is left out: demo sessions must not move the real numbers.
+_REAL_FEEDBACK_FROM = """
+    FROM diagnosis_feedback f
+    JOIN diary_days d ON d.day_id = f.day_id
+    JOIN patients p ON p.patient_id = d.patient_id
+    WHERE NOT p.is_demo
+"""
 _LATEST_FEEDBACK_SQL = """
-    SELECT DISTINCT ON (day_id) day_id, diagnosis, zone, model_top1, model_top3, model_zone, model_version
-    FROM diagnosis_feedback
-    ORDER BY day_id, feedback_id DESC
+    SELECT DISTINCT ON (f.day_id) f.day_id, f.diagnosis, f.zone, f.model_top1, f.model_top3, f.model_zone, f.model_version
+""" + _REAL_FEEDBACK_FROM + """
+    ORDER BY f.day_id, f.feedback_id DESC
 """
 
 
@@ -1055,7 +1231,7 @@ def get_real_patients() -> Dict[str, Any]:
         cur = conn.cursor()
         cur.execute(_LATEST_FEEDBACK_SQL)
         rows = cur.fetchall()
-        cur.execute("SELECT MIN(created_at)::date FROM diagnosis_feedback")
+        cur.execute("SELECT MIN(f.created_at)::date " + _REAL_FEEDBACK_FROM)
         first = cur.fetchone()[0]
     finally:
         conn.close()
@@ -1095,10 +1271,40 @@ def get_symptom_graph(patient_id: int, symptom_code: str) -> List[Dict[str, Any]
     finally:
         conn.close()
 
+def hidden_from_doctor(user: dict, patient_id: Optional[int] = None, day_id: Optional[int] = None) -> bool:
+    """The isolation rule, in one place. True when the caller is a doctor and the patient (or the
+    patient owning the day) is a demo patient while the token is not a demo token, or the other way
+    round. Callers then answer exactly as if the patient or day did not exist. A patient or day that
+    really does not exist is not hidden: the endpoint's ordinary not-found path handles it."""
+    if user.get("role") != "doctor":
+        return False
+    conn = connect()
+    try:
+        cur = conn.cursor()
+        if day_id is not None:
+            cur.execute("""SELECT p.is_demo FROM diary_days d JOIN patients p ON p.patient_id = d.patient_id
+                           WHERE d.day_id = %s""", (day_id,))
+        else:
+            cur.execute("SELECT is_demo FROM patients WHERE patient_id = %s", (patient_id,))
+        row = cur.fetchone()
+    finally:
+        conn.close()
+    return row is not None and bool(row[0]) != bool(user.get("demo"))
+
 # Triage lives in triage.py. Zones are computed once in /analys and stored with
 # the diary day, so the doctor's dashboard shows exactly what the patient saw.
 
-def get_all_patients_triage() -> list:
+_ZONE_ORDER = {"red": 0, "yellow": 1, "green": 2}
+COMPLAINT_PREVIEW_CHARS = 160
+
+def _complaint_preview(text: Optional[str]) -> Optional[str]:
+    if not text:
+        return None
+    return text if len(text) <= COMPLAINT_PREVIEW_CHARS else text[:COMPLAINT_PREVIEW_CHARS - 1].rstrip() + "…"
+
+def get_all_patients_triage(is_demo: bool = False) -> list:
+    """The queue for a doctor: patients whose is_demo equals the caller's flag, red first, then
+    yellow, green, not assessed; newest assessment first inside a zone."""
     conn = connect()
     try:
         cur = conn.cursor()
@@ -1106,13 +1312,16 @@ def get_all_patients_triage() -> list:
             SELECT p.patient_id, p.full_name, p.city, p.created_at,
                    d.disease_predict, d.score, d.created_at as diag_date,
                    d.day_id, d.zone,
-                   EXISTS (SELECT 1 FROM diagnosis_feedback f WHERE f.day_id = d.day_id) AS has_feedback
+                   EXISTS (SELECT 1 FROM diagnosis_feedback f WHERE f.day_id = d.day_id) AS has_feedback,
+                   d.analysis_json, i.text, p.is_demo
             FROM patients p
             LEFT JOIN diary_days d ON d.day_id = (
                 SELECT MAX(d2.day_id) FROM diary_days d2 WHERE d2.patient_id = p.patient_id
             )
+            LEFT JOIN intakes i ON i.intake_id = d.intake_id
+            WHERE p.is_demo = %s
             ORDER BY p.patient_id
-        """)
+        """, (is_demo,))
         rows = cur.fetchall()
 
         # v1 rows (no stored zone) are re-assessed below; their reported symptoms
@@ -1144,6 +1353,14 @@ def get_all_patients_triage() -> list:
                 evidences = symptoms_by_day.get(day_id, [])
                 zone = triage.assess({disease: 1.0} if disease else {}, evidences).zone
 
+            analysis = {}
+            if r[10]:
+                try:
+                    analysis = json.loads(decrypt_field(r[10]) or "{}")
+                except (ValueError, TypeError):
+                    analysis = {}
+            sort_at = r[6] or r[3]
+
             result.append({
                 "patient_id": r[0],
                 "full_name": decrypt_field(r[1]),
@@ -1155,8 +1372,133 @@ def get_all_patients_triage() -> list:
                 "zone": zone,
                 "last_day_id": day_id,
                 "feedback_pending": day_id is not None and not r[9],
+                "complaint": _complaint_preview(decrypt_field(r[11])),
+                "reasons": analysis.get("reasons") or [],
+                "low_confidence": bool(analysis.get("low_confidence", False)),
+                "is_demo": bool(r[12]),
+                "_sort": (_ZONE_ORDER.get(zone, 3), -sort_at.timestamp()),
             })
+        result.sort(key=lambda row: row["_sort"])
+        for row in result:
+            del row["_sort"]
         return result
+    finally:
+        conn.close()
+
+# ─── Demo mode ───
+
+DEMO_LIVE_TTL_HOURS = 48
+
+def demo_enabled() -> bool:
+    return os.environ.get("DEMO_MODE", "").strip().lower() in ("1", "true", "yes")
+
+def _demo_cases() -> List[dict]:
+    import demo_seed
+    return demo_seed.DEMO_CASES
+
+def _unusable_password_hash() -> str:
+    return hash_password(secrets.token_urlsafe(32))
+
+def ensure_demo_doctor() -> int:
+    """The demo doctor's id (found by is_demo, not by username); created if missing."""
+    conn = connect()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT doctor_id FROM doctors WHERE is_demo ORDER BY doctor_id LIMIT 1")
+        row = cur.fetchone()
+        if row:
+            return row[0]
+        try:
+            cur.execute("""
+                INSERT INTO doctors(full_name, specialty, password_hash, username, is_demo)
+                VALUES (%s,%s,%s,%s,TRUE) RETURNING doctor_id
+            """, (encrypt_field("Демо-врач"), encrypt_field("Терапевт"), _unusable_password_hash(), RESERVED_USERNAME))
+            doctor_id = cur.fetchone()[0]
+            conn.commit()
+            return doctor_id
+        except psycopg2.errors.UniqueViolation:
+            conn.rollback()  # a concurrent request created it first
+            cur.execute("SELECT doctor_id FROM doctors WHERE is_demo ORDER BY doctor_id LIMIT 1")
+            return cur.fetchone()[0]
+    finally:
+        conn.close()
+
+def _seed_demo_case(case: dict) -> bool:
+    """Insert one demo case unless it exists. False when it already exists (or a concurrent
+    request is inserting it: the unique partial index on demo_seed lets only one win)."""
+    conn = connect()
+    try:
+        cur = conn.cursor()
+        try:
+            cur.execute("""
+                INSERT INTO patients(full_name, city, password_hash, is_demo, demo_seed)
+                VALUES (%s,%s,%s,TRUE,%s) ON CONFLICT DO NOTHING RETURNING patient_id
+            """, (encrypt_field(case["name"]), encrypt_field(case.get("city", "")),
+                  _unusable_password_hash(), case["key"]))
+        except psycopg2.errors.UniqueViolation:
+            conn.rollback()
+            return False
+        row = cur.fetchone()
+        conn.commit()
+    finally:
+        conn.close()
+    if row is None:
+        return False
+    patient_id = row[0]
+    try:
+        for day in case["days"]:
+            intake_id = insert_intake(patient_id, day["complaint"], {"mode": "demo", "lang": day.get("lang")})
+            conn = connect()
+            try:
+                cur = conn.cursor()
+                cur.execute("SELECT NOW() - %s * INTERVAL '1 minute'", (int(day.get("minutes_ago", 0)),))
+                created_at = cur.fetchone()[0]
+            finally:
+                conn.close()
+            analyse_and_store(patient_id, list(day["evidences"]), list(day.get("absent", [])),
+                              list(day.get("unknown", [])), case["age"], case["sex"], intake_id, None,
+                              created_at=created_at)
+    except Exception:
+        # Leave no half-built case behind: the next request seeds it again.
+        conn = connect()
+        try:
+            conn.cursor().execute("DELETE FROM patients WHERE patient_id = %s", (patient_id,))
+            conn.commit()
+        finally:
+            conn.close()
+        raise
+    return True
+
+def seed_demo_cases() -> int:
+    return sum(_seed_demo_case(case) for case in _demo_cases())
+
+def delete_old_demo_patients() -> int:
+    """Live demo patients (not seeded cases) older than the TTL; days, intakes and feedback cascade."""
+    conn = connect()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "DELETE FROM patients WHERE is_demo AND demo_seed IS NULL AND created_at < NOW() - %s * INTERVAL '1 hour'",
+            (DEMO_LIVE_TTL_HOURS,))
+        conn.commit()
+        return cur.rowcount
+    finally:
+        conn.close()
+
+def create_demo_patient(name: Optional[str], lang: str) -> int:
+    conn = connect()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO patients(full_name, city, password_hash, is_demo) VALUES (%s,%s,%s,TRUE) RETURNING patient_id",
+            (encrypt_field(name or "Guest"), encrypt_field(""), _unusable_password_hash()))
+        patient_id = cur.fetchone()[0]
+        if not name:
+            guest = {"ru": "Гость", "kk": "Қонақ"}.get(lang, "Guest")
+            cur.execute("UPDATE patients SET full_name = %s WHERE patient_id = %s",
+                        (encrypt_field(f"{guest} {patient_id}"), patient_id))
+        conn.commit()
+        return patient_id
     finally:
         conn.close()
 
@@ -1315,21 +1657,91 @@ def login_patient_endpoint(request: Request, body: LoginPatientRequest):
     token = create_access_token({"role": "patient", "patient_id": body.patient_id})
     return LoginResponse(login=True, access_token=token)
 
+def _doctor_login_response(doctor_id: int) -> DoctorLoginResponse:
+    info = get_doctor_info(doctor_id)
+    token_claims = {"role": "doctor", "doctor_id": doctor_id}
+    if info and info["is_demo"]:
+        token_claims["demo"] = True
+    return DoctorLoginResponse(login=True, access_token=create_access_token(token_claims), doctor=info)
+
 @app.post("/login_doctor", response_model=DoctorLoginResponse)
 @limiter.limit("5/minute")
 def login_doctor_endpoint(request: Request, body: LoginDoctorRequest):
-    flag = log_in_doctor(body.doctor_id, body.password)
-    if not flag:
+    found = find_doctor_for_login(body.username, body.doctor_id)
+    if found is None:
+        hash_password(body.password)  # same cost as a real check, so timing does not reveal unknown users
         raise HTTPException(status_code=401, detail="Invalid credentials")
-    logger.info("Doctor %d logged in", body.doctor_id)
-    info = get_doctor_info(body.doctor_id)
-    token = create_access_token({"role": "doctor", "doctor_id": body.doctor_id})
-    return DoctorLoginResponse(login=True, access_token=token, doctor=info)
+    doctor_id, stored_hash, is_demo = found
+    if not verify_password(body.password, stored_hash) or is_demo:
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+    logger.info("Doctor %d logged in", doctor_id)
+    return _doctor_login_response(doctor_id)
+
+@app.post("/register_doctor", response_model=DoctorLoginResponse)
+@limiter.limit("5/minute")
+def register_doctor_endpoint(request: Request, body: RegisterDoctorRequest):
+    if body.username == RESERVED_USERNAME:
+        raise HTTPException(status_code=409, detail="username_taken")
+    try:
+        doctor_id = register_doctor_with_invite(body)
+    except psycopg2.errors.UniqueViolation:
+        raise HTTPException(status_code=409, detail="username_taken")
+    if doctor_id is None:
+        raise HTTPException(status_code=400, detail="invalid_invite")
+    logger.info("Doctor %d registered with an invite", doctor_id)
+    return _doctor_login_response(doctor_id)
+
+def _require_demo_enabled():
+    if not demo_enabled():
+        raise HTTPException(status_code=404, detail="demo_disabled")
+
+@app.get("/demo/status")
+def demo_status_endpoint():
+    return {"enabled": demo_enabled()}
+
+@app.post("/demo/doctor", response_model=DoctorLoginResponse)
+@limiter.limit("20/minute")
+def demo_doctor_endpoint(request: Request):
+    _require_demo_enabled()
+    doctor_id = ensure_demo_doctor()
+    seed_demo_cases()
+    delete_old_demo_patients()
+    return _doctor_login_response(doctor_id)
+
+@app.post("/demo/patient", response_model=RegisterResponse)
+@limiter.limit("10/minute")
+def demo_patient_endpoint(request: Request, body: Optional[DemoPatientRequest] = None):
+    _require_demo_enabled()
+    body = body or DemoPatientRequest()
+    name = body.name.strip() if body.name and body.name.strip() else None
+    patient_id = create_demo_patient(name, body.lang)
+    token = create_access_token({"role": "patient", "patient_id": patient_id, "demo": True})
+    return RegisterResponse(patient_id=patient_id, access_token=token)
+
+@app.post("/doctor/invites")
+@limiter.limit("10/minute")
+def create_invite_endpoint(request: Request, user: dict = Depends(require_real_doctor)):
+    return create_invite(user["doctor_id"])
+
+@app.post("/doctor/change_password")
+@limiter.limit("5/minute")
+def change_password_endpoint(request: Request, body: ChangePasswordRequest, user: dict = Depends(require_real_doctor)):
+    if not change_doctor_password(user["doctor_id"], body.old_password, body.new_password):
+        raise HTTPException(status_code=400, detail="wrong_password")
+    return {"ok": True}
+
+@app.get("/doctor/me", response_model=DoctorInfo)
+@limiter.limit("60/minute")
+def doctor_me_endpoint(request: Request, user: dict = Depends(require_doctor)):
+    info = get_doctor_info(user["doctor_id"])
+    if info is None:
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+    return info
 
 @app.post("/list_doctor")
 @limiter.limit("20/minute")
-def list_doctor_endpoint(request: Request):
-    docs = list_doctors_db()
+def list_doctor_endpoint(request: Request, _user: dict = Depends(require_doctor)):
+    docs = list_doctors_db(bool(_user.get("demo")))
     return {"doctors": docs}
 
 # ─── Patient endpoints (require patient or doctor token) ───
@@ -1349,6 +1761,8 @@ def evidence_catalog_endpoint(_user: dict = Depends(require_patient_or_doctor)):
 def get_history_endpoint(request: Request, body: HistoryRequest, user: dict = Depends(require_patient_or_doctor)):
     if user.get("role") == "patient" and user.get("patient_id") != body.patient_id:
         raise HTTPException(status_code=403, detail="Access denied")
+    if hidden_from_doctor(user, patient_id=body.patient_id):
+        return {"history": []}
     history = get_patient_history(body.patient_id)
     return {"history": history}
 
@@ -1357,6 +1771,9 @@ def get_history_endpoint(request: Request, body: HistoryRequest, user: dict = De
 def get_symptoms_endpoint(request: Request, body: SymptomsRequest, user: dict = Depends(require_patient_or_doctor)):
     if user.get("role") == "patient" and user.get("patient_id") != body.patient_id:
         raise HTTPException(status_code=403, detail="Access denied")
+    if hidden_from_doctor(user, patient_id=body.patient_id):
+        get_symptom_graph(body.patient_id, body.symptom_str)  # same validation errors as for a real patient
+        return {"symptoms_arr": []}
     graph = get_symptom_graph(body.patient_id, body.symptom_str)
     return {"symptoms_arr": graph}
 
@@ -1399,25 +1816,15 @@ def _recommendation(disease: str, zone: str, review: Optional[dict]) -> str:
     return text
 
 
-@app.post("/analys")
-@limiter.limit("30/minute")
-def analys_endpoint(request: Request, body: AnalysRequest, user: dict = Depends(require_patient)):
-    patient_id = user["patient_id"]
-    evidences = _clean(body.evidences, "analys")
-    absent = [e for e in _clean(body.absent, "analys") if e not in set(evidences)]
-    unknown = [e for e in _clean(body.unknown, "analys") if e not in set(evidences)]
-    if not evidences:
-        raise HTTPException(status_code=422, detail="No valid evidences")
-
-    review = None
-    if body.intake_id is not None:
-        intake = get_intake(body.intake_id, patient_id)
-        if intake is None:
-            raise HTTPException(status_code=403, detail="Access denied")
-        review = intake["result"].get("review")
-
+def analyse_and_store(patient_id: int, evidences: List[str], absent: List[str], unknown: List[str],
+                      age: Optional[int], sex: Optional[str], intake_id: Optional[int],
+                      review: Optional[dict], created_at=None,
+                      diagnose_setup: Optional[str] = None) -> dict:
+    """Model + triage + storage for one already-validated set of answers; returns the /analys
+    response. Seeding the demo cases calls this too, so seeded days take the production path.
+    created_at backdates the diary day (None: the database default, now)."""
     notes: List[str] = []
-    distribution = predict_distribution(evidences, body.age, body.sex, absent, notes=notes)
+    distribution = predict_distribution(evidences, age, sex, absent, notes=notes)
     top3 = list(distribution.items())[:3]
     top1, top1_score = top3[0]
     # Below the question engine's stop threshold the top-1 is much less reliable
@@ -1432,7 +1839,7 @@ def analys_endpoint(request: Request, body: AnalysRequest, user: dict = Depends(
         evidences,
         top1,
         top1_score,
-        body.diagnose_setup,
+        diagnose_setup,
         absent=absent,
         zone=assessed.zone,
         analysis={
@@ -1440,20 +1847,21 @@ def analys_endpoint(request: Request, body: AnalysRequest, user: dict = Depends(
             "reasons": assessed.reasons,
             "red_mass": round(assessed.red_mass, 4),
             "yellow_mass": round(assessed.yellow_mass, 4),
-            "age": body.age,
-            "sex": body.sex,
+            "age": age,
+            "sex": sex,
             "out_of_scope": out_of_scope,
             "likely_condition": likely_condition,
             "unknown": unknown,  # "don't know" answers: not evidence, kept for analysis
             "model_version": MODEL_VERSION,
             "low_confidence": low_confidence,
         },
-        intake_id=body.intake_id,
+        intake_id=intake_id,
+        created_at=created_at,
     )
     plog.log_stage(
-        "analysis", intake=body.intake_id, day=day, patient=patient_id,
+        "analysis", intake=intake_id, day=day, patient=patient_id,
         present=plog.labelled(evidences), absent=plog.labelled(absent), unknown=plog.labelled(unknown),
-        age=body.age, sex=body.sex,
+        age=age, sex=sex,
         top=plog.top(distribution), zone=assessed.zone, reasons=assessed.reasons, low_confidence=low_confidence,
         red_mass=round(assessed.red_mass, 3), yellow_mass=round(assessed.yellow_mass, 3),
         review=_review_summary(review), adjustments=notes,
@@ -1477,6 +1885,27 @@ def analys_endpoint(request: Request, body: AnalysRequest, user: dict = Depends(
         "reasons": assessed.reasons,
         "out_of_scope": {"likely_condition": likely_condition} if out_of_scope else None,
     }
+
+
+@app.post("/analys")
+@limiter.limit("30/minute")
+def analys_endpoint(request: Request, body: AnalysRequest, user: dict = Depends(require_patient)):
+    patient_id = user["patient_id"]
+    evidences = _clean(body.evidences, "analys")
+    absent = [e for e in _clean(body.absent, "analys") if e not in set(evidences)]
+    unknown = [e for e in _clean(body.unknown, "analys") if e not in set(evidences)]
+    if not evidences:
+        raise HTTPException(status_code=422, detail="No valid evidences")
+
+    review = None
+    if body.intake_id is not None:
+        intake = get_intake(body.intake_id, patient_id)
+        if intake is None:
+            raise HTTPException(status_code=403, detail="Access denied")
+        review = intake["result"].get("review")
+
+    return analyse_and_store(patient_id, evidences, absent, unknown, body.age, body.sex,
+                             body.intake_id, review, diagnose_setup=body.diagnose_setup)
 
 
 @app.post("/extract_symptoms")
@@ -1707,6 +2136,8 @@ async def explain_endpoint(request: Request, body: ExplainRequest, user: dict = 
 @limiter.limit("60/minute")
 def update_by_doctor_endpoint(request: Request, body: UpdateByDoctorRequest, user: dict = Depends(require_doctor)):
     doctor_id = user.get("doctor_id")
+    if hidden_from_doctor(user, patient_id=body.patient_id, day_id=body.day_id):
+        return {"ok": False}
     ok = doctor_update_day(
         body.patient_id,
         body.day_id,
@@ -1721,7 +2152,7 @@ def update_by_doctor_endpoint(request: Request, body: UpdateByDoctorRequest, use
 @limiter.limit("60/minute")
 def doctor_feedback_endpoint(request: Request, body: DoctorFeedbackRequest, user: dict = Depends(require_doctor)):
     """The doctor's confirmed diagnosis for a diary day, kept next to the model's answer."""
-    result = insert_feedback(body.day_id, user.get("doctor_id"), body)
+    result = None if hidden_from_doctor(user, day_id=body.day_id) else insert_feedback(body.day_id, user.get("doctor_id"), body)
     if result is None:
         raise HTTPException(status_code=404, detail="Day not found")
     return {"ok": True, **result}
@@ -1729,7 +2160,7 @@ def doctor_feedback_endpoint(request: Request, body: DoctorFeedbackRequest, user
 @app.post("/list_patients_triage")
 @limiter.limit("120/minute")
 def list_patients_triage_endpoint(request: Request, user: dict = Depends(require_doctor)):
-    patients = get_all_patients_triage()
+    patients = get_all_patients_triage(bool(user.get("demo")))
     return {"patients": patients}
 
 @app.get("/feedback_stats")
@@ -1749,7 +2180,7 @@ def accuracy_report_endpoint(request: Request, user: dict = Depends(require_doct
 def get_patient_info_endpoint(request: Request, body: PatientInfoRequest, user: dict = Depends(require_patient_or_doctor)):
     if user.get("role") == "patient" and user.get("patient_id") != body.patient_id:
         raise HTTPException(status_code=403, detail="Access denied")
-    info = select_patient(body.patient_id)
+    info = None if hidden_from_doctor(user, patient_id=body.patient_id) else select_patient(body.patient_id)
     if info is None:
         return {"found": False, "patient": None}
     return {"found": True, "patient": info}
@@ -1760,6 +2191,8 @@ def get_day_symptoms_endpoint(request: Request, body: DaySymptomsRequest, user: 
     if user.get("role") == "patient":
         if not day_belongs_to_patient(body.day_id, user["patient_id"]):
             raise HTTPException(status_code=403, detail="Access denied")
+    if hidden_from_doctor(user, day_id=body.day_id):
+        return {"symptoms": {}, "labels": {}}
     conn = connect()
     try:
         cur = conn.cursor()
@@ -1888,6 +2321,8 @@ def get_lab_results_endpoint(request: Request, body: GetLabResultsRequest = None
         if body is None or body.patient_id is None:
             raise HTTPException(status_code=400, detail="patient_id required for doctors")
         patient_id = body.patient_id
+        if hidden_from_doctor(user, patient_id=patient_id):
+            return {"results": []}
 
     conn = connect()
     try:

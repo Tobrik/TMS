@@ -44,11 +44,17 @@ def api(tmp_path_factory):
     # CORS tests assume the unset default (any origin). Empty, not popped: load_dotenv()
     # would otherwise fill in the value from Backend/.env when the module is imported.
     os.environ["CORS_ALLOWED_ORIGINS"] = ""
+    # Other test files (test_doctor_auth.py) build their own app on their own database:
+    # never reuse a module cached from another database or another key.
+    for name in ("backend TMS", "auth", "crypto_utils"):
+        sys.modules.pop(name, None)
     module = importlib.import_module("backend TMS")  # creates tables, seeds the doctor
     module.limiter.enabled = False  # the tests register more patients than 10/minute
     from fastapi.testclient import TestClient
     with TestClient(module.app) as client:
         yield client, module
+    for name in ("backend TMS", "auth", "crypto_utils"):
+        sys.modules.pop(name, None)
     server.cleanup()
 
 
