@@ -4,15 +4,19 @@ import { useState, useRef, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import {
   Send,
-  HeartPulse,
   LogOut,
   History,
   X,
   FlaskConical,
   Check,
   HelpCircle,
+  Plus,
+  Loader2,
   type LucideIcon,
 } from "lucide-react";
+import { AppHeader, LanguageSwitcher, Logo } from "@/components/brand";
+import { cn } from "@/lib/utils";
+import { tc } from "@/lib/strings/chat";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ChatMessage } from "@/components/ChatMessage";
@@ -36,7 +40,7 @@ import {
   type NextQuestionsResponse,
 } from "@/lib/api";
 import { getDiseaseLabel } from "@/lib/diseaseWeights";
-import { t, getLang, setLang, type Lang, type TranslationKey } from "@/lib/i18n";
+import { t, getLang, type Lang, type TranslationKey } from "@/lib/i18n";
 
 interface Message {
   id: string;
@@ -44,6 +48,7 @@ interface Message {
   content: string;
   timestamp: string;
   diagnosis?: DiagnosisCardData;
+  alert?: boolean;
 }
 
 function getTime(): string {
@@ -96,8 +101,6 @@ function saveMessages(patientId: number, msgs: Message[]): void {
 // what was understood (and can add missed symptoms) → up to 2 rounds of yes/no
 // questions (/next_questions) → /analys (model + triage) → /explain (filled in when ready).
 
-const LANG_CYCLE: Lang[] = ["ru", "en", "kk"];
-const LANG_LABELS: Record<Lang, string> = { ru: "RU", en: "EN", kk: "KZ" };
 const MAX_ROUNDS = 2;
 const MAX_SUGGESTIONS = 8;
 
@@ -110,12 +113,78 @@ const FINDING_OPTIONS: { state: FindingState; labelKey: TranslationKey; Icon: Lu
   { state: "unknown", labelKey: "chipUnsure", Icon: HelpCircle },
 ];
 
+// Selected states differ by fill AND icon, never colour alone:
+// yes = solid primary + check, no = muted + struck-through label + cross, don't know = outlined + question mark
 const OPTION_SELECTED: Record<FindingState, string> = {
-  present: "bg-blue-600 border-blue-600 text-white font-semibold",
-  absent: "bg-gray-700 border-gray-700 text-white font-semibold",
-  unknown: "bg-amber-100 border-amber-500 text-amber-900 font-semibold",
+  present: "border-primary bg-primary text-primary-foreground font-semibold",
+  absent: "border-foreground/30 bg-muted text-foreground font-semibold line-through decoration-2",
+  unknown: "border-2 border-primary bg-card text-primary font-semibold",
 };
-const OPTION_IDLE = "bg-white border-gray-300 text-gray-600 hover:bg-gray-50";
+const OPTION_IDLE = "border-input bg-card text-foreground/80 hover:bg-accent hover:text-accent-foreground";
+
+function AnswerGroup({
+  label,
+  selected,
+  onPick,
+  options,
+}: {
+  label: string;
+  selected: FindingState | null;
+  onPick: (state: FindingState) => void;
+  options: { state: FindingState; text: string; Icon: LucideIcon }[];
+}) {
+  return (
+    <div role="group" aria-label={label} className="grid grid-cols-3 gap-2">
+      {options.map(({ state, text, Icon }) => {
+        const isSelected = selected === state;
+        return (
+          <button
+            key={state}
+            type="button"
+            aria-pressed={isSelected}
+            onClick={() => onPick(state)}
+            className={cn(
+              "inline-flex min-h-11 items-center justify-center gap-1.5 rounded-[10px] border px-2 text-sm outline-none transition-colors duration-150 focus-visible:ring-[3px] focus-visible:ring-ring",
+              isSelected ? OPTION_SELECTED[state] : OPTION_IDLE
+            )}
+          >
+            {isSelected && <Icon className="size-4 shrink-0" aria-hidden="true" />}
+            <span className="min-w-0 py-1.5 text-center leading-tight">{text}</span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function HeaderAction({
+  label,
+  onClick,
+  children,
+}: {
+  label: string;
+  onClick: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="group relative">
+      <button
+        type="button"
+        onClick={onClick}
+        aria-label={label}
+        className="inline-flex size-10 items-center justify-center rounded-[10px] text-muted-foreground outline-none transition-colors duration-150 hover:bg-muted hover:text-foreground focus-visible:ring-[3px] focus-visible:ring-ring"
+      >
+        {children}
+      </button>
+      <span
+        role="tooltip"
+        className="pointer-events-none absolute right-0 top-full z-40 mt-1 hidden whitespace-nowrap rounded-md bg-foreground px-2 py-1 text-xs text-background group-hover:block group-focus-within:block"
+      >
+        {label}
+      </span>
+    </div>
+  );
+}
 
 function initialFindingState(f: Finding): FindingState {
   // "uncertain" (Groq: models disagreed; Clef: confidence 0.25–0.8) starts as "not sure":
@@ -180,6 +249,7 @@ export default function ChatPage() {
   const [historyLoading, setHistoryLoading] = useState(false);
   const [cooldown, setCooldown] = useState(0);
   const [lang, setLangState] = useState<Lang>("ru");
+  const [isDemo, setIsDemo] = useState(false);
 
   // Current complaint: confirmation step, then clarifying questions
   const [session, setSession] = useState<Session | null>(null);
@@ -211,6 +281,7 @@ export default function ChatPage() {
     setPatientId(numId);
     setMessages(loadMessages(numId, currentLang));
     setLangState(currentLang);
+    setIsDemo(localStorage.getItem("patient_is_demo") === "1");
     document.documentElement.lang = currentLang;
   }, [router]);
 
@@ -267,9 +338,9 @@ export default function ChatPage() {
     }
   };
 
-  const pushAssistant = (content: string, diagnosis?: DiagnosisCardData): string => {
+  const pushAssistant = (content: string, diagnosis?: DiagnosisCardData, alert?: boolean): string => {
     const id = `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-    setMessages((prev) => [...prev, { id, role: "assistant", content, timestamp: getTime(), diagnosis }]);
+    setMessages((prev) => [...prev, { id, role: "assistant", content, timestamp: getTime(), diagnosis, alert }]);
     return id;
   };
 
@@ -279,7 +350,7 @@ export default function ChatPage() {
 
   const showAlert = (alert: CriticalAlert | null, alreadyShown: boolean): boolean => {
     if (!alert || alreadyShown) return alreadyShown;
-    pushAssistant(alertText(alert, lang));
+    pushAssistant(alertText(alert, lang).replace(/^\u26A0\uFE0F?\s*/, ""), undefined, true);
     setAlertShown(true);
     return true;
   };
@@ -530,11 +601,9 @@ export default function ChatPage() {
     }
   };
 
-  const toggleLang = () => {
-    const idx = LANG_CYCLE.indexOf(lang);
-    const newLang = LANG_CYCLE[(idx + 1) % LANG_CYCLE.length];
-    setLang(newLang);
+  const onLangChange = (newLang: Lang) => {
     setLangState(newLang);
+    document.documentElement.lang = newLang;
   };
 
   // Clarifying questions are on screen: the text input is locked until they are answered
@@ -561,115 +630,97 @@ export default function ChatPage() {
         .slice(0, MAX_SUGGESTIONS)
     : [];
 
-  return (
-    <div className="flex flex-col h-screen bg-gray-50">
-      {/* Header */}
-      <header className="bg-white border-b border-gray-200 px-4 py-3 flex items-center justify-between shrink-0">
-        <div className="flex items-center gap-3">
-          <div className="w-10 h-10 bg-gradient-to-br from-blue-600 to-teal-500 rounded-xl flex items-center justify-center shadow-md">
-            <HeartPulse className="h-5 w-5 text-white" />
-          </div>
-          <div>
-            <h1 className="font-semibold text-gray-900 text-sm">
-              {t("chatTitle", lang)}
-            </h1>
-            <p className="text-xs text-emerald-500 flex items-center gap-1">
-              <span className="w-1.5 h-1.5 bg-emerald-500 rounded-full inline-block" />
-              {t("online", lang)}
-            </p>
-          </div>
-        </div>
-        <div className="flex items-center gap-2">
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={toggleLang}
-            className="text-xs font-semibold text-gray-500 px-2"
-            title={t("changeLang", lang)}
-          >
-            {LANG_LABELS[lang]}
-          </Button>
-          <Button
-            variant="ghost"
-            size="icon"
-            onClick={() => router.push("/lab")}
-            title={t("myAnalyses", lang)}
-          >
-            <FlaskConical className="h-5 w-5 text-gray-500" />
-          </Button>
-          <Button
-            variant="ghost"
-            size="icon"
-            onClick={loadHistoryData}
-            title={t("history", lang)}
-          >
-            <History className="h-5 w-5 text-gray-500" />
-          </Button>
-          <Button
-            variant="ghost"
-            size="icon"
-            onClick={handleLogout}
-            title={t("logout", lang)}
-          >
-            <LogOut className="h-5 w-5 text-gray-500" />
-          </Button>
-        </div>
-      </header>
 
-      {/* History Sidebar */}
+  const findingOptions = FINDING_OPTIONS.map(({ state, labelKey, Icon }) => ({ state, text: t(labelKey, lang), Icon }));
+  const questionOptions: { state: FindingState; text: string; Icon: LucideIcon }[] = [
+    { state: "present", text: t("yes", lang), Icon: Check },
+    { state: "absent", text: t("no", lang), Icon: X },
+    { state: "unknown", text: t("dontKnow", lang), Icon: HelpCircle },
+  ];
+  const toAnswer = (state: FindingState): "yes" | "no" | "unknown" =>
+    state === "present" ? "yes" : state === "absent" ? "no" : "unknown";
+
+  const cardClass = "rounded-xl border border-border bg-card p-3.5 shadow-card sm:p-4";
+  // Everything the assistant offers (findings, questions, retry) lines up with the bubbles' text, past the avatar
+  const indent = "sm:ml-[38px]";
+
+  return (
+    <div className="relative flex h-dvh flex-col overflow-hidden bg-background">
+      <AppHeader
+        innerClassName="max-w-[720px]"
+        logoSlot={
+          <div className="flex min-w-0 items-center gap-3">
+            <Logo withText={false} className="sm:hidden" />
+            <Logo className="hidden sm:inline-flex" />
+            <div className="hidden min-w-0 border-l border-border pl-3 sm:block">
+              <div className="truncate text-sm font-semibold leading-tight text-foreground">{tc("headerTitle", lang)}</div>
+              <div className="truncate text-xs leading-tight text-muted-foreground">{tc("headerStatus", lang)}</div>
+            </div>
+            {isDemo && (
+              <span className="shrink-0 rounded-full border border-warn-border bg-warn-bg px-2 py-0.5 text-xs font-semibold text-warn">
+                {tc("demoPill", lang)}
+              </span>
+            )}
+          </div>
+        }
+        actions={
+          <>
+            <div className="flex items-center">
+              <HeaderAction label={t("myAnalyses", lang)} onClick={() => router.push("/lab")}>
+                <FlaskConical className="size-5" aria-hidden="true" />
+              </HeaderAction>
+              <HeaderAction label={t("history", lang)} onClick={loadHistoryData}>
+                <History className="size-5" aria-hidden="true" />
+              </HeaderAction>
+              <HeaderAction label={t("logout", lang)} onClick={handleLogout}>
+                <LogOut className="size-5" aria-hidden="true" />
+              </HeaderAction>
+            </div>
+            <LanguageSwitcher lang={lang} onChange={onLangChange} />
+          </>
+        }
+      />
+
+      {/* History drawer */}
       {showHistory && (
-        <div className="absolute inset-0 z-50 flex">
-          <div
-            className="absolute inset-0 bg-black/30"
-            onClick={() => setShowHistory(false)}
-          />
-          <div className="relative ml-auto w-full max-w-sm bg-white h-full shadow-2xl flex flex-col">
-            <div className="flex items-center justify-between p-4 border-b">
-              <h2 className="font-semibold text-gray-900">
-                {t("historyTitle", lang)}
-              </h2>
+        <div className="fixed inset-0 z-50 flex" role="dialog" aria-modal="true" aria-label={t("historyTitle", lang)}>
+          <div className="absolute inset-0 bg-foreground/30" onClick={() => setShowHistory(false)} />
+          <div className="relative ml-auto flex h-full w-full max-w-sm flex-col border-l border-border bg-card shadow-card">
+            <div className="flex items-center justify-between border-b border-border p-4">
+              <h2 className="font-display text-lg font-semibold text-foreground">{t("historyTitle", lang)}</h2>
               <Button
                 variant="ghost"
                 size="icon"
                 onClick={() => setShowHistory(false)}
                 aria-label={t("closeHistory", lang)}
               >
-                <X className="h-5 w-5" />
+                <X className="size-5" />
               </Button>
             </div>
-            <div className="flex-1 overflow-y-auto p-4 space-y-3">
+            <div className="relative flex-1 space-y-3 overflow-y-auto p-4">
               {historyLoading ? (
-                <p className="text-sm text-gray-500 text-center py-8">
-                  {t("loading", lang)}
-                </p>
+                <p className="py-8 text-center text-sm text-muted-foreground">{t("loading", lang)}</p>
               ) : history.length === 0 ? (
-                <p className="text-sm text-gray-500 text-center py-8">
-                  {t("noRecords", lang)}
-                </p>
+                <p className="py-8 text-center text-sm text-muted-foreground">{t("noRecords", lang)}</p>
               ) : (
                 history.map((entry) => (
-                  <div
-                    key={entry.day_id}
-                    className="bg-gray-50 rounded-xl p-3 space-y-1 border border-gray-100"
-                  >
-                    <div className="flex justify-between items-center">
-                      <span className="text-sm font-medium text-gray-900">
+                  <div key={entry.day_id} className="space-y-1 rounded-xl border border-border bg-background p-3">
+                    <div className="flex items-baseline justify-between gap-2">
+                      <span className="text-sm font-semibold text-foreground">
                         {getDiseaseLabel(entry.disease_predict, lang)}
                       </span>
-                      <span className="text-xs text-gray-400">
+                      <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
                         {entry.created_at?.split("T")[0] || entry.created_at}
                       </span>
                     </div>
                     {entry.score !== null && (
-                      <p className="text-xs text-gray-500">
-                        {t("confidence", lang)}: {Math.round(entry.score * 100)}%
+                      <p className="text-[13px] text-muted-foreground">
+                        {t("confidence", lang)}: <span className="tabular-nums">{Math.round(entry.score * 100)}%</span>
                       </p>
                     )}
-                    {entry.recept && (
-                      <p className="text-xs text-gray-600">{entry.recept}</p>
-                    )}
+                    {entry.recept && <p className="text-[13px] text-foreground/80">{entry.recept}</p>}
                     {entry.doctor_name && (
-                      <p className="text-xs text-blue-600">
+                      <p className="text-[13px] text-primary">
                         {t("doctor", lang)}: {entry.doctor_name}
                       </p>
                     )}
@@ -681,220 +732,183 @@ export default function ChatPage() {
         </div>
       )}
 
-      {/* Messages Area */}
-      <div className="flex-1 overflow-y-auto px-4 py-4 space-y-4" role="log" aria-live="polite" aria-relevant="additions">
-        {messages.map((msg) => (
-          <div key={msg.id} className="space-y-2">
-            <ChatMessage
-              role={msg.role}
-              content={msg.content}
-              timestamp={msg.timestamp}
-            />
-            {msg.diagnosis && (
-              <div className="flex">
-                <div className="ml-11">
-                  <DiagnosisCard diagnosis={msg.diagnosis} lang={lang} />
+      {/* Conversation */}
+      <div className="relative flex-1 overflow-y-auto" role="log" aria-live="polite" aria-relevant="additions">
+        <div className="mx-auto w-full max-w-[720px] space-y-4 px-4 py-5 sm:px-6">
+          {messages.map((msg) => (
+            <div key={msg.id} className="space-y-3">
+              <ChatMessage
+                role={msg.role}
+                content={msg.content}
+                timestamp={msg.timestamp}
+                alert={msg.alert}
+                lang={lang}
+              />
+              {msg.diagnosis && (
+                <div className={indent}>
+                  <DiagnosisCard diagnosis={msg.diagnosis} lang={lang} demoQueued={isDemo} />
                 </div>
+              )}
+            </div>
+          ))}
+
+          {findings.length > 0 && (
+            <div className={cn(indent, cardClass, "space-y-4")}>
+              <p className="text-[13px] text-muted-foreground">{tc("confirmHint", lang)}</p>
+              <div className="space-y-3">
+                {findings.map((f) => {
+                  const state = findingStates[f.code] ?? "unknown";
+                  return (
+                    <div key={f.code} className="space-y-2.5 rounded-xl border border-border p-3">
+                      <div>
+                        <p className="text-[15px] font-medium leading-snug text-foreground">{f.label[lang]}</p>
+                        {f.quote && (
+                          <p className="mt-0.5 text-[13px] text-muted-foreground">
+                            {t("youSaid", lang)}: «{f.quote}»
+                          </p>
+                        )}
+                      </div>
+                      <AnswerGroup
+                        label={f.label[lang]}
+                        selected={state}
+                        onPick={(next) => setFindingState(f.code, next)}
+                        options={findingOptions}
+                      />
+                    </div>
+                  );
+                })}
               </div>
-            )}
-          </div>
-        ))}
-        {findings.length > 0 && (
-          <div className="ml-11 bg-white border border-blue-100 rounded-xl p-3 shadow-sm space-y-3 max-w-[90%]">
-            <div className="space-y-2">
-              {findings.map((f) => {
-                const state = findingStates[f.code] ?? "unknown";
+
+              {catalog.length > 0 &&
+                (addOpen ? (
+                  <div className="space-y-2">
+                    <Input
+                      autoFocus
+                      value={addQuery}
+                      onChange={(e) => setAddQuery(e.target.value)}
+                      placeholder={t("addSymptomSearch", lang)}
+                      aria-label={t("addSymptom", lang)}
+                    />
+                    {addQuery.trim() &&
+                      (suggestions.length > 0 ? (
+                        <ul className="flex flex-col gap-1.5">
+                          {suggestions.map((e) => (
+                            <li key={e.code}>
+                              <button
+                                type="button"
+                                onClick={() => addFromCatalog(e)}
+                                className="min-h-11 w-full rounded-[10px] border border-input bg-card px-3 text-left text-sm outline-none transition-colors hover:bg-accent focus-visible:ring-[3px] focus-visible:ring-ring"
+                              >
+                                {e.label[lang]}
+                              </button>
+                            </li>
+                          ))}
+                        </ul>
+                      ) : (
+                        <p className="text-[13px] text-muted-foreground">{t("addSymptomNoMatch", lang)}</p>
+                      ))}
+                    <Button variant="ghost" className="min-h-11 text-muted-foreground" onClick={closeAddSymptom}>
+                      {t("cancel", lang)}
+                    </Button>
+                  </div>
+                ) : (
+                  <Button variant="outline" className="min-h-11 w-full sm:w-auto" onClick={() => setAddOpen(true)} disabled={isLoading}>
+                    <Plus aria-hidden="true" />
+                    {t("addSymptom", lang)}
+                  </Button>
+                ))}
+
+              <div>
+                <Button className="min-h-11 w-full sm:w-auto" onClick={confirmFindings} disabled={isLoading}>
+                  {t("confirmBtn", lang)}
+                </Button>
+              </div>
+            </div>
+          )}
+
+          {clarifyingQuestions.length > 0 && session && (
+            <div className={cn(indent, "space-y-3")}>
+              {clarifyingQuestions.map((q) => {
+                const n = session.asked.indexOf(q.evidence_id) + 1;
                 return (
-                  <div key={f.code} className="border border-gray-100 rounded-lg p-2.5 space-y-2">
-                    <div>
-                      <p className="text-sm font-medium text-gray-800">{f.label[lang]}</p>
-                      {f.quote && (
-                        <p className="text-[11px] text-gray-500 mt-0.5">
-                          {t("youSaid", lang)}: «{f.quote}»
-                        </p>
-                      )}
-                    </div>
-                    <div role="group" aria-label={f.label[lang]} className="flex flex-wrap gap-1.5">
-                      {FINDING_OPTIONS.map(({ state: option, labelKey, Icon }) => {
-                        const selected = state === option;
-                        const OptionIcon = selected ? Check : Icon;
-                        return (
-                          <button
-                            key={option}
-                            type="button"
-                            aria-pressed={selected}
-                            onClick={() => setFindingState(f.code, option)}
-                            className={`inline-flex items-center gap-1 text-xs border rounded-lg px-2.5 py-1.5 transition-colors ${
-                              selected ? OPTION_SELECTED[option] : OPTION_IDLE
-                            }`}
-                          >
-                            <OptionIcon className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
-                            {t(labelKey, lang)}
-                          </button>
-                        );
-                      })}
-                    </div>
+                  <div key={q.evidence_id} className={cardClass}>
+                    {n > 0 && (
+                      <p className="mb-1 text-[13px] font-medium tabular-nums text-primary">
+                        {tc("questionN", lang, { n })}
+                      </p>
+                    )}
+                    <p className="mb-3 text-[15px] leading-snug text-foreground">{questionText(q, lang)}</p>
+                    <AnswerGroup
+                      label={questionText(q, lang)}
+                      selected={null}
+                      onPick={(state) => handleClarifyAnswer(q, toAnswer(state))}
+                      options={questionOptions}
+                    />
                   </div>
                 );
               })}
             </div>
+          )}
 
-            {catalog.length > 0 && (
-              addOpen ? (
-                <div className="space-y-2">
-                  <Input
-                    autoFocus
-                    value={addQuery}
-                    onChange={(e) => setAddQuery(e.target.value)}
-                    placeholder={t("addSymptomSearch", lang)}
-                    aria-label={t("addSymptom", lang)}
-                    className="bg-gray-50 border-gray-200 focus:border-blue-400 focus:ring-blue-400"
-                  />
-                  {addQuery.trim() && (
-                    suggestions.length > 0 ? (
-                      <ul className="flex flex-col gap-1">
-                        {suggestions.map((e) => (
-                          <li key={e.code}>
-                            <button
-                              type="button"
-                              onClick={() => addFromCatalog(e)}
-                              className="w-full text-left text-xs border border-gray-200 rounded-lg px-2.5 py-1.5 hover:bg-blue-50 hover:border-blue-300 transition-colors"
-                            >
-                              {e.label[lang]}
-                            </button>
-                          </li>
-                        ))}
-                      </ul>
-                    ) : (
-                      <p className="text-xs text-gray-500">{t("addSymptomNoMatch", lang)}</p>
-                    )
-                  )}
-                  <Button variant="ghost" size="sm" className="text-gray-500" onClick={closeAddSymptom}>
-                    {t("cancel", lang)}
-                  </Button>
-                </div>
-              ) : (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="border-blue-300 text-blue-700"
-                  onClick={() => setAddOpen(true)}
-                  disabled={isLoading}
-                >
-                  {t("addSymptom", lang)}
-                </Button>
-              )
-            )}
-
-            <Button
-              size="sm"
-              className="bg-blue-600 hover:bg-blue-700 text-white"
-              onClick={confirmFindings}
-              disabled={isLoading}
-            >
-              {t("confirmBtn", lang)}
-            </Button>
-          </div>
-        )}
-        {clarifyingQuestions.length > 0 && (
-          <div className="flex flex-col gap-3 ml-11">
-            {clarifyingQuestions.map((q) => (
-              <div key={q.evidence_id} className="bg-white border border-blue-100 rounded-xl p-3 shadow-sm">
-                <p className="text-sm text-gray-800 mb-2">{questionText(q, lang)}</p>
-                <div className="flex gap-2">
-                  <Button
-                    size="sm"
-                    className="bg-blue-600 hover:bg-blue-700 text-white px-4"
-                    onClick={() => handleClarifyAnswer(q, "yes")}
-                  >
-                    {t("yes", lang)}
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    className="border-gray-300 text-gray-600 px-4"
-                    onClick={() => handleClarifyAnswer(q, "no")}
-                  >
-                    {t("no", lang)}
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    className="text-gray-400 px-3"
-                    onClick={() => handleClarifyAnswer(q, "unknown")}
-                  >
-                    {t("dontKnow", lang)}
-                  </Button>
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-        {failure && !isLoading && (
-          <div className="flex flex-wrap gap-2 ml-11">
-            <Button
-              size="sm"
-              className="bg-blue-600 hover:bg-blue-700 text-white px-4"
-              onClick={retryFailed}
-            >
-              {t("retry", lang)}
-            </Button>
-            {failure.kind === "questions" && (
-              <Button
-                size="sm"
-                variant="outline"
-                className="border-gray-300 text-gray-600"
-                onClick={skipToResult}
-              >
-                {t("skipToResult", lang)}
+          {failure && !isLoading && (
+            <div className={cn(indent, "flex flex-wrap gap-2")}>
+              <Button className="min-h-11 px-5" onClick={retryFailed}>
+                {t("retry", lang)}
               </Button>
-            )}
-          </div>
-        )}
-        {isLoading && <DiagnosisSkeleton lang={lang} />}
-        <div ref={messagesEndRef} />
+              {failure.kind === "questions" && (
+                <Button variant="outline" className="min-h-11" onClick={skipToResult}>
+                  {t("skipToResult", lang)}
+                </Button>
+              )}
+            </div>
+          )}
+
+          {isLoading && <DiagnosisSkeleton lang={lang} />}
+          <div ref={messagesEndRef} />
+        </div>
       </div>
 
-      {/* Input Area */}
-      <div className="bg-white border-t border-gray-200 p-4 shrink-0">
-        {answeringQuestions && (
-          <div className="max-w-3xl mx-auto mb-2">
-            <Button
-              variant="link"
-              size="sm"
-              className="h-auto p-0 text-xs text-blue-600"
-              onClick={startNewComplaint}
+      {/* Composer */}
+      <div className="shrink-0 border-t border-border bg-card pb-[max(0.75rem,env(safe-area-inset-bottom))] pt-3">
+        <div className="mx-auto w-full max-w-[720px] px-4 sm:px-6">
+          {answeringQuestions && (
+            <div className="mb-2">
+              <Button variant="link" className="h-auto min-h-11 p-0 text-[13px]" onClick={startNewComplaint}>
+                {t("newComplaint", lang)}
+              </Button>
+            </div>
+          )}
+          <div className="flex items-center gap-1 rounded-full border border-input bg-background py-1 pl-4 pr-1 transition-shadow focus-within:border-ring focus-within:ring-[3px] focus-within:ring-ring/40">
+            <input
+              ref={inputRef}
+              type="text"
+              aria-label={tc("composerLabel", lang)}
+              placeholder={answeringQuestions ? t("answerQuestionsFirst", lang) : t("inputPlaceholder", lang)}
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              onKeyDown={handleKeyDown}
+              disabled={isLoading || answeringQuestions}
+              className="h-10 min-w-0 flex-1 bg-transparent text-base text-foreground outline-none placeholder:text-muted-foreground disabled:cursor-not-allowed disabled:opacity-50 md:text-[15px]"
+            />
+            <button
+              type="button"
+              onClick={handleSend}
+              aria-label={t("sendMessage", lang)}
+              title={cooldown > 0 ? tc("waitSeconds", lang, { n: cooldown }) : t("sendMessage", lang)}
+              disabled={isLoading || answeringQuestions || cooldown > 0 || !input.trim()}
+              className="inline-flex size-11 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground outline-none transition-colors duration-150 hover:bg-primary-hover focus-visible:ring-[3px] focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-40"
             >
-              {t("newComplaint", lang)}
-            </Button>
+              {isLoading ? (
+                <Loader2 className="size-5 motion-safe:animate-spin" aria-hidden="true" />
+              ) : cooldown > 0 ? (
+                <span className="text-sm font-medium tabular-nums">{cooldown}</span>
+              ) : (
+                <Send className="size-5" aria-hidden="true" />
+              )}
+            </button>
           </div>
-        )}
-        <div className="max-w-3xl mx-auto flex gap-2">
-          <Input
-            ref={inputRef}
-            placeholder={answeringQuestions ? t("answerQuestionsFirst", lang) : t("inputPlaceholder", lang)}
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={handleKeyDown}
-            disabled={isLoading || answeringQuestions}
-            className="flex-1 bg-gray-50 border-gray-200 focus:border-blue-400 focus:ring-blue-400"
-          />
-          <Button
-            onClick={handleSend}
-            aria-label={t("sendMessage", lang)}
-            disabled={isLoading || answeringQuestions || cooldown > 0 || !input.trim()}
-            className="bg-blue-600 hover:bg-blue-700 text-white shadow-md px-4"
-          >
-            {cooldown > 0 ? (
-              <span className="text-xs font-mono">{cooldown}</span>
-            ) : (
-              <Send className="h-4 w-4" />
-            )}
-          </Button>
+          <p className="mt-2 text-center text-xs text-muted-foreground">{t("mvpDisclaimer", lang)}</p>
         </div>
-        <p className="text-center text-xs text-gray-400 mt-2">
-          {t("mvpDisclaimer", lang)}
-        </p>
       </div>
     </div>
   );

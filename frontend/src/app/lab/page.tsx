@@ -4,9 +4,12 @@ import { useState, useRef, useEffect, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { Upload, ArrowLeft, FlaskConical, Loader2, ImageIcon, ShieldCheck } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { AppHeader } from "@/components/brand/AppHeader";
+import { Logo } from "@/components/brand/Logo";
 import { LabResultCard } from "@/components/LabResultCard";
 import { uploadLabResult, getLabResults, type LabResult } from "@/lib/api";
 import { t, getLang, type Lang } from "@/lib/i18n";
+import { ps } from "@/lib/strings/pages";
 
 async function cropTopOfImage(file: File, cropPercent = 0.15): Promise<File> {
   return new Promise((resolve, reject) => {
@@ -166,30 +169,39 @@ export default function LabPage() {
   }
 
   return (
-    <div className="min-h-screen bg-gray-50">
-      <header className="bg-white border-b border-gray-200 px-4 py-3 flex items-center justify-between sticky top-0 z-10">
-        <div className="flex items-center gap-3">
-          <Button variant="ghost" size="icon" onClick={() => router.push("/chat")}>
-            <ArrowLeft className="h-5 w-5 text-gray-500" />
-          </Button>
-          <div className="w-10 h-10 bg-gradient-to-br from-purple-600 to-pink-500 rounded-xl flex items-center justify-center shadow-md">
-            <FlaskConical className="h-5 w-5 text-white" />
+    <div className="min-h-screen bg-background text-foreground">
+      <AppHeader
+        logoSlot={
+          <div className="flex items-center gap-1">
+            <Button variant="ghost" size="icon" onClick={() => router.push("/chat")} aria-label={ps("back", lang)}>
+              <ArrowLeft />
+            </Button>
+            <Logo />
           </div>
-          <div>
-            <h1 className="font-semibold text-gray-900 text-sm">{t("myLabTitle", lang)}</h1>
-            <p className="text-xs text-gray-500">{t("uploadPhotoSubtitle", lang)}</p>
+        }
+      />
+
+      <main className="mx-auto max-w-[720px] space-y-6 p-4 sm:py-8">
+        <div className="flex items-start gap-3">
+          <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-accent text-accent-foreground">
+            <FlaskConical className="h-5 w-5" aria-hidden="true" />
+          </span>
+          <div className="min-w-0">
+            <h1 className="font-display text-2xl font-semibold leading-tight text-foreground sm:text-[32px]">
+              {t("myLabTitle", lang)}
+            </h1>
+            <p className="mt-1 text-sm text-muted-foreground">{t("uploadPhotoSubtitle", lang)}</p>
           </div>
         </div>
-      </header>
 
-      <main className="max-w-2xl mx-auto p-4 space-y-6">
         {!currentResult && (
           <button
             onClick={toggleCrop}
-            className={`flex items-center gap-2 text-xs px-3 py-2 rounded-lg border transition-colors w-full ${
+            aria-pressed={cropEnabled}
+            className={`flex w-full min-h-11 items-center gap-2 rounded-xl border px-3 py-2 text-left text-[13px] transition-colors duration-150 outline-none focus-visible:ring-[3px] focus-visible:ring-ring ${
               cropEnabled
-                ? "bg-emerald-50 border-emerald-200 text-emerald-700"
-                : "bg-gray-50 border-gray-200 text-gray-500"
+                ? "border-ok-border bg-ok-bg text-ok"
+                : "border-border bg-card text-muted-foreground hover:text-foreground"
             }`}
           >
             <ShieldCheck className="h-4 w-4 shrink-0" />
@@ -202,8 +214,9 @@ export default function LabPage() {
         {!currentResult && (
           <div
             className={`
-              border-2 border-dashed rounded-2xl p-8 text-center transition-colors cursor-pointer
-              ${dragOver ? "border-purple-400 bg-purple-50" : "border-gray-300 bg-white hover:border-purple-300 hover:bg-purple-50/50"}
+              rounded-2xl border-2 border-dashed p-8 text-center shadow-card outline-none transition-colors duration-150 focus-visible:ring-[3px] focus-visible:ring-ring
+              ${dragOver ? "border-primary bg-accent" : "border-input bg-card hover:border-ring hover:bg-accent/40"}
+              ${selectedFile ? "" : "cursor-pointer"}
             `}
             onDrop={handleDrop}
             onDragOver={handleDragOver}
@@ -235,21 +248,20 @@ export default function LabPage() {
             {preview ? (
               <div className="space-y-4">
                 {cropEnabled && (
-                  <p className="text-xs text-emerald-600 font-medium">
+                  <p className="text-xs font-medium text-ok">
                     {t("croppedPreview", lang)}
                   </p>
                 )}
                 <img
                   src={preview}
                   alt="Preview"
-                  className="max-h-64 mx-auto rounded-lg shadow-md"
+                  className="mx-auto max-h-64 rounded-lg border border-border"
                 />
-                <p className="text-sm text-gray-600">{selectedFile?.name}</p>
+                <p className="text-sm text-muted-foreground">{selectedFile?.name}</p>
                 <div className="flex items-center justify-center gap-3">
                   <Button
                     onClick={(e) => { e.stopPropagation(); handleAnalyze(); }}
                     disabled={isAnalyzing}
-                    className="bg-gradient-to-r from-purple-600 to-pink-500 hover:from-purple-700 hover:to-pink-600 text-white"
                   >
                     {isAnalyzing ? (
                       <><Loader2 className="h-4 w-4 mr-2 animate-spin" />{t("recognizing", lang)}</>
@@ -268,12 +280,12 @@ export default function LabPage() {
               </div>
             ) : (
               <div className="space-y-3">
-                <div className="w-16 h-16 mx-auto bg-purple-100 rounded-2xl flex items-center justify-center">
-                  <Upload className="h-8 w-8 text-purple-500" />
+                <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-2xl bg-accent text-primary">
+                  <Upload className="h-8 w-8" aria-hidden="true" />
                 </div>
                 <div>
-                  <p className="text-sm font-medium text-gray-700">{t("dragPhotoHere", lang)}</p>
-                  <p className="text-xs text-gray-500 mt-1">{t("orClickToSelect", lang)}</p>
+                  <p className="text-sm font-medium text-foreground">{t("dragPhotoHere", lang)}</p>
+                  <p className="mt-1 text-[13px] text-muted-foreground">{t("orClickToSelect", lang)}</p>
                 </div>
               </div>
             )}
@@ -281,7 +293,7 @@ export default function LabPage() {
         )}
 
         {error && (
-          <div className="bg-red-50 border border-red-200 rounded-lg p-3 text-sm text-red-700">
+          <div role="alert" className="rounded-xl border border-urgent-border border-l-4 border-l-urgent bg-urgent-bg p-3 text-sm text-urgent">
             {error}
           </div>
         )}
@@ -298,10 +310,10 @@ export default function LabPage() {
 
         {history.length > 0 && (
           <div className="space-y-3">
-            <h2 className="text-sm font-semibold text-gray-700">{t("previousAnalyses", lang)}</h2>
+            <h2 className="text-lg font-semibold text-foreground sm:text-xl">{t("previousAnalyses", lang)}</h2>
             {historyLoading ? (
               <div className="flex justify-center py-8">
-                <Loader2 className="h-6 w-6 animate-spin text-gray-400" />
+                <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
               </div>
             ) : (
               history.map((r) => <LabResultCard key={r.result_id} result={r} lang={lang} />)
@@ -310,7 +322,7 @@ export default function LabPage() {
         )}
 
         {history.length === 0 && !historyLoading && !currentResult && (
-          <p className="text-center text-sm text-gray-400 py-8">
+          <p className="py-8 text-center text-sm text-muted-foreground">
             {historyError ? t("labLoadFailed", lang) : t("noAnalysesYet", lang)}
           </p>
         )}

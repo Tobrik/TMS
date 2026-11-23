@@ -1,18 +1,9 @@
 "use client";
 
-import {
-  Stethoscope,
-  UserRound,
-  Pill,
-  AlertTriangle,
-  ChevronRight,
-  Brain,
-  Loader2,
-  ShieldAlert,
-} from "lucide-react";
-import { Card } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
-import { PieChart } from "@/components/PieChart";
+import { UserRound, Pill, Info, Brain, Loader2, ShieldAlert, Phone, CheckCircle2 } from "lucide-react";
+import { ZoneBadge, ProbabilityBar, UrgencyBanner } from "@/components/brand";
+import { cn } from "@/lib/utils";
+import { tc } from "@/lib/strings/chat";
 import type { DiagnosisResult, TriageReason } from "@/lib/types";
 import { t, getLang, type Lang, type TranslationKey } from "@/lib/i18n";
 import { getDiseaseDoctor, getDiseaseRecommendation } from "@/lib/diseaseWeights";
@@ -23,6 +14,8 @@ export type DiagnosisCardData = DiagnosisResult & { lowConfidence?: boolean };
 interface DiagnosisCardProps {
   diagnosis: DiagnosisCardData;
   lang?: Lang;
+  /** Demo patient: show the "your case is in the doctor's queue" line under the result */
+  demoQueued?: boolean;
 }
 
 const REASON_KEYS: Record<TriageReason["code"], TranslationKey> = {
@@ -53,7 +46,8 @@ function urgencyReasons(diagnosis: DiagnosisResult, l: Lang): string[] {
  */
 function localizedAdvice(diagnosis: DiagnosisResult, l: Lang): { doctor: string; recommendation: string } {
   if (l === "ru") {
-    return { doctor: diagnosis.doctor, recommendation: diagnosis.recommendation };
+    // The backend text can start with a warning emoji; the result band carries urgency instead
+    return { doctor: diagnosis.doctor, recommendation: diagnosis.recommendation.replace(/^[\u26A0\uFE0F\s]+/, "") };
   }
   const doctor = getDiseaseDoctor(diagnosis.diseaseName, l) || diagnosis.doctor;
   let recommendation = getDiseaseRecommendation(diagnosis.diseaseName, l) || diagnosis.recommendation;
@@ -69,169 +63,161 @@ function localizedAdvice(diagnosis: DiagnosisResult, l: Lang): { doctor: string;
   return { doctor, recommendation };
 }
 
-// A missing zone is "unknown", never "low": it must not look like a green result
-function zoneToUrgency(zone?: "red" | "yellow" | "green"): "low" | "medium" | "high" | "unknown" {
-  if (zone === "red") return "high";
-  if (zone === "yellow") return "medium";
-  if (zone === "green") return "low";
-  return "unknown";
+const ZONE_STYLE = {
+  red: { edge: "border-l-urgent", band: "bg-urgent-bg", text: "text-urgent" },
+  yellow: { edge: "border-l-warn", band: "bg-warn-bg", text: "text-warn" },
+  green: { edge: "border-l-ok", band: "bg-ok-bg", text: "text-ok" },
+  none: { edge: "border-l-input", band: "bg-muted", text: "text-muted-foreground" },
+} as const;
+
+function Section({ icon: Icon, label, children }: { icon: typeof UserRound; label: string; children: React.ReactNode }) {
+  return (
+    <div className="flex items-start gap-3">
+      <span className="mt-0.5 inline-flex size-8 shrink-0 items-center justify-center rounded-full bg-accent text-accent-foreground">
+        <Icon className="size-4" aria-hidden="true" />
+      </span>
+      <div className="min-w-0 flex-1">
+        <p className="text-[13px] font-medium text-muted-foreground">{label}</p>
+        <div className="text-[15px] leading-relaxed text-foreground">{children}</div>
+      </div>
+    </div>
+  );
 }
 
-export function DiagnosisCard({ diagnosis, lang }: DiagnosisCardProps) {
+export function DiagnosisCard({ diagnosis, lang, demoQueued }: DiagnosisCardProps) {
   const l = lang || getLang();
-  const urgency = zoneToUrgency(diagnosis.zone);
-
-  const urgencyConfig = {
-    low: {
-      color: "bg-emerald-50 border-emerald-200",
-      badge: "bg-emerald-100 text-emerald-700",
-      label: t("lowUrgency", l),
-    },
-    medium: {
-      color: "bg-amber-50 border-amber-200",
-      badge: "bg-amber-100 text-amber-700",
-      label: t("mediumUrgency", l),
-    },
-    high: {
-      color: "bg-red-50 border-red-200",
-      badge: "bg-red-100 text-red-700",
-      label: t("highUrgency", l),
-    },
-    unknown: {
-      color: "bg-gray-50 border-gray-300",
-      badge: "bg-gray-200 text-gray-700",
-      label: t("zoneUnknown", l),
-    },
-  };
-
-  const config = urgencyConfig[urgency];
+  const zone = diagnosis.zone ?? null;
+  const style = ZONE_STYLE[zone ?? "none"];
   const reasons = urgencyReasons(diagnosis, l);
   const advice = localizedAdvice(diagnosis, l);
+  const band =
+    zone === "red" ? tc("resultBandRed", l)
+    : zone === "yellow" ? tc("resultBandYellow", l)
+    : zone === "green" ? tc("resultBandGreen", l)
+    : tc("resultBandUnknown", l);
+
+  // The model's three scores are shown as shares of the three, like the old pie chart
+  const slices = diagnosis.slices ?? [];
+  const total = slices.reduce((sum, s) => sum + Math.max(s.score, 0), 0);
 
   return (
-    <Card
-      className={`overflow-hidden border-2 ${config.color} shadow-lg max-w-[90%]`}
-    >
-      {/* Header */}
-      <div className="px-4 py-3 border-b border-inherit">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <Stethoscope className="h-5 w-5 text-blue-600" />
-            <span className="font-semibold text-sm text-gray-700">
-              {t("preliminaryDiag", l)}
-            </span>
-          </div>
-          <Badge className={`text-xs ${config.badge} border-0`}>
-            {urgency === "high" && (
-              <AlertTriangle className="h-3 w-3 mr-1" />
-            )}
-            {config.label}
-          </Badge>
-        </div>
-      </div>
+    <div className="space-y-2">
+      {zone === "red" && (
+        <UrgencyBanner
+          title={tc("urgentTitle", l)}
+          message={tc("urgentMessage", l)}
+          action={
+            <a
+              href="tel:103"
+              className="inline-flex min-h-11 items-center gap-2 rounded-[10px] bg-white px-4 text-sm font-semibold text-urgent outline-none focus-visible:ring-[3px] focus-visible:ring-white/70"
+            >
+              <Phone className="size-4" aria-hidden="true" />
+              {tc("callNow", l)}
+            </a>
+          }
+        />
+      )}
 
-      {/* Body */}
-      <div className="p-4 space-y-4">
-        {/* Outside the 49 conditions the model knows: say so before the label */}
-        {diagnosis.outOfScope && (
-          <div className="flex items-start gap-3 bg-amber-50 rounded-xl p-3 border border-amber-200">
-            <ShieldAlert className="h-5 w-5 text-amber-600 mt-0.5 shrink-0" />
-            <div>
-              <p className="text-sm font-semibold text-amber-800">{t("outOfScopeTitle", l)}</p>
-              <p className="text-xs text-amber-700 leading-relaxed">
-                {diagnosis.outOfScope.likely_condition && (
-                  <>{t("possibly", l)}: {diagnosis.outOfScope.likely_condition}. </>
-                )}
-                {t("outOfScopeBody", l)}
-              </p>
-            </div>
+      <article
+        aria-label={tc("resultAria", l)}
+        className={cn("overflow-hidden rounded-xl border border-border border-l-4 bg-card shadow-card", style.edge)}
+      >
+        {/* Band: zone + the triage reason in plain words */}
+        <div className={cn("space-y-1.5 px-4 py-3", style.band)}>
+          <div className="flex flex-wrap items-center gap-2">
+            <ZoneBadge zone={zone} lang={l} />
+            <p className={cn("text-[15px] font-semibold", style.text)}>{band}</p>
           </div>
-        )}
-
-        {/* Disease name */}
-        <div>
-          <h3 className="text-lg font-bold text-gray-900">
-            {diagnosis.diseaseLabel}
-          </h3>
+          {reasons.length > 0 && zone !== "green" && (
+            <p className="text-[13px] leading-snug text-foreground/80">
+              <span className="font-medium">{t("urgencyWhy", l)}:</span> {reasons.join(" · ")}
+            </p>
+          )}
         </div>
 
-        {/* Model is unsure: the amber notice sits above the top-3 chart; icon + text, not color only */}
-        {diagnosis.lowConfidence && (
-          <div role="note" className="flex items-start gap-3 bg-amber-50 rounded-xl p-3 border border-amber-300">
-            <AlertTriangle className="h-5 w-5 text-amber-600 mt-0.5 shrink-0" aria-hidden="true" />
-            <p className="text-sm text-amber-900 leading-relaxed">{t("lowConfidenceNote", l)}</p>
-          </div>
-        )}
-
-        {/* Pie chart */}
-        {diagnosis.slices && diagnosis.slices.length > 0 && (
-          <div className="flex justify-center py-2">
-            <div className="w-56">
-              <PieChart slices={diagnosis.slices} size={130} lang={l} />
+        <div className="space-y-5 p-4">
+          {/* Outside the 49 conditions the model knows: say so before the label */}
+          {diagnosis.outOfScope && (
+            <div role="note" className="flex items-start gap-3 rounded-xl border border-warn-border bg-warn-bg p-3">
+              <ShieldAlert className="mt-0.5 size-5 shrink-0 text-warn" aria-hidden="true" />
+              <div>
+                <p className="text-sm font-semibold text-warn">{t("outOfScopeTitle", l)}</p>
+                <p className="text-[13px] leading-relaxed text-foreground/80">
+                  {diagnosis.outOfScope.likely_condition && (
+                    <>{t("possibly", l)}: {diagnosis.outOfScope.likely_condition}. </>
+                  )}
+                  {t("outOfScopeBody", l)}
+                </p>
+              </div>
             </div>
-          </div>
-        )}
+          )}
 
-        {/* Doctor */}
-        <div className="flex items-start gap-3 bg-white/60 rounded-xl p-3">
-          <UserRound className="h-5 w-5 text-blue-600 mt-0.5 shrink-0" />
           <div>
-            <p className="text-xs text-gray-500 font-medium">
-              {t("recommendedDoctor", l)}
-            </p>
-            <p className="text-sm font-semibold text-gray-800">
-              {advice.doctor}
-            </p>
+            <p className="text-[13px] font-medium text-muted-foreground">{t("preliminaryDiag", l)}</p>
+            <h3 className="mt-0.5 font-display text-2xl font-semibold leading-tight text-foreground">
+              {diagnosis.diseaseLabel}
+            </h3>
           </div>
-          <ChevronRight className="h-4 w-4 text-gray-400 ml-auto mt-0.5" />
+
+          {/* Calm notice, not an error: icon + text, neutral colours */}
+          {diagnosis.lowConfidence && (
+            <div role="note" className="flex items-start gap-3 rounded-xl bg-muted p-3">
+              <Info className="mt-0.5 size-5 shrink-0 text-muted-foreground" aria-hidden="true" />
+              <div>
+                <p className="text-sm font-semibold text-foreground">{tc("lowConfidenceTitle", l)}</p>
+                <p className="text-sm leading-relaxed text-foreground/80">{t("lowConfidenceNote", l)}</p>
+              </div>
+            </div>
+          )}
+
+          {total > 0 && (
+            <div className="space-y-3">
+              <p className="text-[13px] font-medium text-muted-foreground">{tc("possibleConditions", l)}</p>
+              {slices.slice(0, 3).map((s, i) => (
+                <ProbabilityBar
+                  key={s.name}
+                  label={s.label}
+                  percent={(Math.max(s.score, 0) / total) * 100}
+                  rank={i}
+                />
+              ))}
+            </div>
+          )}
+
+          <Section icon={UserRound} label={t("recommendedDoctor", l)}>
+            <span className="font-semibold">{advice.doctor}</span>
+          </Section>
+
+          {diagnosis.explanationPending && !diagnosis.patientExplanation && (
+            <div className="flex items-center gap-2 text-[13px] text-muted-foreground" role="status">
+              <Loader2 className="size-4 motion-safe:animate-spin" aria-hidden="true" />
+              {t("explanationPending", l)}
+            </div>
+          )}
+          {diagnosis.patientExplanation && (
+            <Section icon={Brain} label={t("whyThisDiagnosis", l)}>
+              {diagnosis.patientExplanation}
+            </Section>
+          )}
+
+          <Section icon={Pill} label={t("recommendations", l)}>
+            {advice.recommendation}
+          </Section>
         </div>
 
-        {/* Why this urgency */}
-        {reasons.length > 0 && urgency !== "low" && (
-          <p className="text-xs text-gray-500">
-            <span className="font-medium">{t("urgencyWhy", l)}:</span> {reasons.join(" · ")}
+        <div className="border-t border-border bg-muted/50 px-4 py-2.5">
+          <p className="text-center text-[13px] leading-snug text-muted-foreground">
+            {t("aiDisclaimerShort", l)} {tc("disclaimerResult", l)}
           </p>
-        )}
-
-        {/* AI Explanation for patient */}
-        {diagnosis.explanationPending && !diagnosis.patientExplanation && (
-          <div className="flex items-center gap-2 text-xs text-blue-500 px-1">
-            <Loader2 className="h-3.5 w-3.5 animate-spin" />
-            {t("explanationPending", l)}
-          </div>
-        )}
-        {diagnosis.patientExplanation && (
-          <div className="flex items-start gap-3 bg-blue-50/80 rounded-xl p-3 border border-blue-100">
-            <Brain className="h-5 w-5 text-blue-600 mt-0.5 shrink-0" />
-            <div>
-              <p className="text-xs text-blue-500 font-medium">
-                {t("whyThisDiagnosis", l)}
-              </p>
-              <p className="text-sm text-gray-700 leading-relaxed">
-                {diagnosis.patientExplanation}
-              </p>
-            </div>
-          </div>
-        )}
-
-        {/* Recommendation */}
-        <div className="flex items-start gap-3 bg-white/60 rounded-xl p-3">
-          <Pill className="h-5 w-5 text-emerald-600 mt-0.5 shrink-0" />
-          <div>
-            <p className="text-xs text-gray-500 font-medium">{t("recommendations", l)}</p>
-            <p className="text-sm text-gray-700 leading-relaxed">
-              {advice.recommendation}
-            </p>
-          </div>
         </div>
-      </div>
+      </article>
 
-      {/* Footer */}
-      <div className="px-4 py-2.5 bg-white/40 border-t border-inherit">
-        <p className="text-xs text-gray-400 text-center">
-          {t("aiDisclaimerShort", l)}
+      {demoQueued && (
+        <p className="flex items-center gap-2 px-1 text-sm font-medium text-primary" role="status">
+          <CheckCircle2 className="size-4 shrink-0" aria-hidden="true" />
+          {tc("demoQueued", l)}
         </p>
-      </div>
-    </Card>
+      )}
+    </div>
   );
 }

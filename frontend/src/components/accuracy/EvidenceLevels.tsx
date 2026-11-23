@@ -6,10 +6,10 @@ import { formatDate, formatNumber, formatPct, pctPlain, tf } from "./format";
 
 function LevelBlock({ title, source, children }: { title: string; source: string; children: ReactNode }) {
   return (
-    <section className="space-y-4 rounded-xl border border-gray-200 border-l-4 border-l-indigo-400 bg-white p-5 shadow-sm print:break-inside-avoid print:shadow-none">
+    <section className="space-y-4 rounded-xl border border-border border-l-4 border-l-primary bg-card p-5 shadow-card print:break-inside-avoid print:shadow-none">
       <div>
-        <h3 className="text-base font-semibold text-gray-900">{title}</h3>
-        {source && <p className="mt-1 text-xs text-gray-600">{source}</p>}
+        <h3 className="text-base font-semibold text-foreground">{title}</h3>
+        {source && <p className="mt-1 text-xs text-muted-foreground">{source}</p>}
       </div>
       {children}
     </section>
@@ -18,10 +18,10 @@ function LevelBlock({ title, source, children }: { title: string; source: string
 
 function MetricRows({ rows, lang }: { rows: [TranslationKey, AccuracyMetric | undefined][]; lang: Lang }) {
   return (
-    <dl className="divide-y divide-gray-100 text-sm">
+    <dl className="divide-y divide-border text-sm">
       {rows.map(([key, metric]) => (
         <div key={key} className="grid grid-cols-1 gap-1 py-2 sm:grid-cols-[minmax(0,1fr)_auto] sm:gap-4">
-          <dt className="text-gray-800">{t(key, lang)}</dt>
+          <dt className="text-foreground/85">{t(key, lang)}</dt>
           <dd>
             <MetricText metric={metric} lang={lang} />
           </dd>
@@ -35,10 +35,10 @@ export function RealPatientsBlock({ real, lang }: { real: AccuracyRealPatients; 
   return (
     <LevelBlock title={t("accLevelReal", lang)} source={`${t("accSource", lang)}: ${t("accRealSource", lang)}`}>
       {real.n === 0 ? (
-        <p className="text-sm text-gray-800">{t("accRealEmpty", lang)}</p>
+        <p className="text-sm text-foreground/85">{t("accRealEmpty", lang)}</p>
       ) : (
         <>
-          <p className="text-sm text-gray-700">
+          <p className="text-sm text-muted-foreground">
             {tf("accN", lang, { n: real.n })}
             {real.since && ` · ${tf("accSince", lang, { date: formatDate(real.since, lang) })}`}
           </p>
@@ -63,7 +63,7 @@ export function WrittenBlock({ written, lang }: { written: AccuracyWritten | nul
   if (!written) {
     return (
       <LevelBlock title={t("accLevelWritten", lang)} source="">
-        <p className="text-sm text-gray-800">{t("accNoWritten", lang)}</p>
+        <p className="text-sm text-foreground/85">{t("accNoWritten", lang)}</p>
       </LevelBlock>
     );
   }
@@ -78,7 +78,7 @@ export function WrittenBlock({ written, lang }: { written: AccuracyWritten | nul
       title={t("accLevelWritten", lang)}
       source={`${t("accSource", lang)}: ${written.source}`}
     >
-      <p className="text-sm text-gray-700">
+      <p className="text-sm text-muted-foreground">
         {tf("accWrittenScope", lang, { inScope: written.n_in_scope, outScope: written.n_out_of_scope })}
       </p>
 
@@ -86,7 +86,7 @@ export function WrittenBlock({ written, lang }: { written: AccuracyWritten | nul
         <table className="w-full min-w-[32rem] text-left text-sm">
           <caption className="sr-only">{t("accLevelWritten", lang)}</caption>
           <thead>
-            <tr className="border-b border-gray-200 text-gray-700">
+            <tr className="border-b border-border text-muted-foreground">
               <th scope="col" className="py-2 pr-3 font-medium">{t("accColMetric", lang)}</th>
               <th scope="col" className="py-2 pr-3 font-medium">{t("accColAccepts", lang)}</th>
               <th scope="col" className="py-2 font-medium">{t("accColConfirms", lang)}</th>
@@ -94,8 +94,8 @@ export function WrittenBlock({ written, lang }: { written: AccuracyWritten | nul
           </thead>
           <tbody>
             {rows.map(([label, accepts, confirms]) => (
-              <tr key={label} className="border-b border-gray-100 align-top">
-                <th scope="row" className="py-2 pr-3 font-normal text-gray-800">{t(label, lang)}</th>
+              <tr key={label} className="border-b border-border align-top">
+                <th scope="row" className="py-2 pr-3 font-normal text-foreground">{t(label, lang)}</th>
                 <td className="py-2 pr-3"><MetricText metric={accepts} lang={lang} /></td>
                 <td className="py-2"><MetricText metric={confirms} lang={lang} /></td>
               </tr>
@@ -105,7 +105,7 @@ export function WrittenBlock({ written, lang }: { written: AccuracyWritten | nul
       </div>
 
       <div className="space-y-1">
-        <h4 className="text-sm font-semibold text-gray-900">{t("accExtraction", lang)}</h4>
+        <h4 className="text-sm font-semibold text-foreground">{t("accExtraction", lang)}</h4>
         <MetricRows
           lang={lang}
           rows={[
@@ -118,7 +118,7 @@ export function WrittenBlock({ written, lang }: { written: AccuracyWritten | nul
       </div>
 
       <div className="space-y-1">
-        <h4 className="text-sm font-semibold text-gray-900">{t("accOutOfScope", lang)}</h4>
+        <h4 className="text-sm font-semibold text-foreground">{t("accOutOfScope", lang)}</h4>
         <MetricRows
           lang={lang}
           rows={[
@@ -135,7 +135,7 @@ export function SyntheticBlock({ synthetic, lang }: { synthetic: AccuracySynthet
   const low = synthetic.low_confidence;
   return (
     <LevelBlock title={t("accLevelSynthetic", lang)} source={`${t("accSource", lang)}: ${synthetic.source}`}>
-      <p className="text-sm text-gray-700">
+      <p className="text-sm text-muted-foreground">
         {tf("accSynthMeta", lang, {
           n: synthetic.settings.n,
           q: formatNumber(synthetic.questions_mean, lang, 1),
@@ -149,8 +149,8 @@ export function SyntheticBlock({ synthetic, lang }: { synthetic: AccuracySynthet
           ["accZoneExact", synthetic.metrics.zone_exact],
         ]}
       />
-      <div className="rounded-lg bg-gray-50 p-4 text-sm text-gray-800">
-        <h4 className="font-semibold text-gray-900">{t("accLowConfTitle", lang)}</h4>
+      <div className="rounded-lg bg-muted p-4 text-sm text-foreground/85">
+        <h4 className="font-semibold text-foreground">{t("accLowConfTitle", lang)}</h4>
         <p className="mt-1 leading-relaxed">
           {tf("accLowConfText", lang, {
             share: formatPct(low.share.value, lang),

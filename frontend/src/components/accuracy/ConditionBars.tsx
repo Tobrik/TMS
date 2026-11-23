@@ -10,9 +10,9 @@ import { tf } from "./format";
 const SHOW_FIRST = 10;
 
 const ZONE_DOT: Record<Zone, { dot: string; label: TranslationKey }> = {
-  red: { dot: "bg-red-500", label: "zoneShortRed" },
-  yellow: { dot: "bg-amber-400", label: "zoneShortYellow" },
-  green: { dot: "bg-emerald-500", label: "zoneShortGreen" },
+  red: { dot: "bg-urgent", label: "zoneShortRed" },
+  yellow: { dot: "bg-warn", label: "zoneShortYellow" },
+  green: { dot: "bg-ok", label: "zoneShortGreen" },
 };
 
 // Weakest first; unknown values go last
@@ -27,10 +27,10 @@ export function ConditionBars({ conditions, lang }: { conditions: AccuracyCondit
 
   return (
     <section className="space-y-3">
-      <h2 className="text-lg font-semibold text-gray-900">{t("accConditionsTitle", lang)}</h2>
-      <p className="text-sm text-gray-700">{t("accConditionsIntro", lang)}</p>
+      <h2 className="text-lg font-semibold text-foreground sm:text-xl">{t("accConditionsTitle", lang)}</h2>
+      <p className="text-sm text-foreground/85">{t("accConditionsIntro", lang)}</p>
       {sorted.length === 0 ? (
-        <p className="text-sm text-gray-600">{t("accNotAvailable", lang)}</p>
+        <p className="text-sm text-muted-foreground">{t("accNotAvailable", lang)}</p>
       ) : (
         <ul className="space-y-4">
           {sorted.map((c, i) => {
@@ -44,8 +44,8 @@ export function ConditionBars({ conditions, lang }: { conditions: AccuracyCondit
                 className={`${hiddenRow ? "hidden print:flex" : "flex"} flex-col gap-2 sm:flex-row sm:items-center sm:gap-4 print:break-inside-avoid`}
               >
                 <div className="min-w-0 sm:w-64 sm:shrink-0">
-                  <p className="text-sm text-gray-900">{label}</p>
-                  <p className="flex items-center gap-1.5 text-xs text-gray-600">
+                  <p className="text-sm text-foreground">{label}</p>
+                  <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
                     <span aria-hidden="true" className={`inline-block h-2 w-2 rounded-full ${zone.dot}`} />
                     {t(zone.label, lang)}
                   </p>
@@ -68,7 +68,7 @@ export function ConditionBars({ conditions, lang }: { conditions: AccuracyCondit
           type="button"
           onClick={() => setExpanded((e) => !e)}
           aria-expanded={expanded}
-          className="text-sm font-medium text-indigo-700 underline-offset-4 hover:underline print:hidden"
+          className="text-sm font-medium text-primary underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring rounded print:hidden"
         >
           {expanded ? t("accShowLess", lang) : tf("accShowAll", lang, { count: sorted.length })}
         </button>

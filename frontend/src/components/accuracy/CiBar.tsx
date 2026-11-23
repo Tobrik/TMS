@@ -9,16 +9,16 @@ import { formatCi, formatPct, tf } from "./format";
 export function CiBar({ metric }: { metric: AccuracyMetric }) {
   const { value, ci } = metric;
   return (
-    <div aria-hidden="true" className="relative h-3 w-full rounded-full bg-gray-100 print:border print:border-gray-300">
+    <div aria-hidden="true" className="relative h-3 w-full rounded-full bg-muted print:border print:border-border">
       {value !== null && (
         <div
-          className="absolute inset-y-0 left-0 rounded-full bg-indigo-300 print:bg-gray-300"
+          className="absolute inset-y-0 left-0 rounded-full bg-chart-2 print:bg-chart-5"
           style={{ width: `${value * 100}%` }}
         />
       )}
       {ci && (
         <div
-          className="absolute top-1/2 h-0.5 -translate-y-1/2 bg-gray-900"
+          className="absolute top-1/2 h-0.5 -translate-y-1/2 bg-foreground"
           style={{ left: `${ci[0] * 100}%`, width: `${(ci[1] - ci[0]) * 100}%` }}
         />
       )}
@@ -36,13 +36,13 @@ export function MetricText({
   lang: Lang;
   showN?: boolean;
 }) {
-  if (!metric) return <span className="text-gray-500">{t("accNotAvailable", lang)}</span>;
+  if (!metric) return <span className="text-muted-foreground">{t("accNotAvailable", lang)}</span>;
   const ci = formatCi(metric, lang);
   return (
     <span className="tabular-nums">
-      <span className="font-semibold text-gray-900">{formatPct(metric.value, lang)}</span>
-      {ci && <span className="text-gray-700"> · {tf("accCi", lang, { ci })}</span>}
-      {showN && <span className="text-gray-600"> · {tf("accN", lang, { n: metric.n })}</span>}
+      <span className="font-semibold text-foreground">{formatPct(metric.value, lang)}</span>
+      {ci && <span className="text-muted-foreground"> · {tf("accCi", lang, { ci })}</span>}
+      {showN && <span className="text-muted-foreground"> · {tf("accN", lang, { n: metric.n })}</span>}
     </span>
   );
 }

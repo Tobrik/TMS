@@ -1,39 +1,77 @@
 "use client";
 
+import { useSyncExternalStore, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
-import { ArrowLeft, ShieldCheck, AlertTriangle, Brain, Database, Lock, Globe, Mail } from "lucide-react";
+import { ArrowLeft, AlertTriangle, Brain, Database, Lock, Globe, Mail, type LucideIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { AppHeader } from "@/components/brand/AppHeader";
+import { Logo } from "@/components/brand/Logo";
+import { getLang, type Lang } from "@/lib/i18n";
+import { ps } from "@/lib/strings/pages";
+
+// Article block: number or icon, heading in the display face, body text in the reading column
+function Section({ icon: Icon, title, children }: { icon?: LucideIcon; title: string; children: ReactNode }) {
+  return (
+    <section className="space-y-3">
+      <h2 className="flex items-center gap-2.5 font-display text-xl font-semibold leading-snug text-foreground sm:text-2xl">
+        {Icon && <Icon className="h-5 w-5 shrink-0 text-primary" aria-hidden="true" />}
+        <span>{title}</span>
+      </h2>
+      <div className="space-y-3 text-[15px] leading-[1.65] text-foreground/85">{children}</div>
+    </section>
+  );
+}
+
+// The stored language is read without an effect. "ru" is used on the server and during hydration.
+function noSubscribe() {
+  return () => {};
+}
+function readStoredLang(): Lang {
+  return getLang();
+}
+function serverLang(): Lang {
+  return "ru";
+}
 
 export default function PolicyPage() {
   const router = useRouter();
+  const lang = useSyncExternalStore(noSubscribe, readStoredLang, serverLang);
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-blue-50 via-white to-teal-50">
-      {/* Header */}
-      <header className="bg-white/80 backdrop-blur-sm border-b border-gray-200 sticky top-0 z-10">
-        <div className="max-w-3xl mx-auto px-4 py-3 flex items-center gap-3">
-          <Button variant="ghost" size="icon" onClick={() => router.back()}>
-            <ArrowLeft className="h-5 w-5 text-gray-500" />
-          </Button>
-          <div className="flex items-center gap-2">
-            <ShieldCheck className="h-5 w-5 text-blue-600" />
-            <h1 className="font-semibold text-gray-900 text-sm">
-              Политика конфиденциальности и Условия использования
-            </h1>
+    <div className="min-h-screen bg-background text-foreground">
+      <AppHeader
+        logoSlot={
+          <div className="flex items-center gap-1">
+            <Button variant="ghost" size="icon" onClick={() => router.back()} aria-label={ps("back", lang)}>
+              <ArrowLeft />
+            </Button>
+            <Logo />
           </div>
-        </div>
-      </header>
+        }
+        actions={
+          <Button variant="ghost" size="sm" onClick={() => router.push("/")} className="text-muted-foreground">
+            {ps("policyBack", lang)}
+          </Button>
+        }
+      />
 
-      <div className="max-w-3xl mx-auto px-4 py-8 space-y-8">
+      <article className="mx-auto max-w-[720px] space-y-10 px-4 py-8 sm:py-12">
+        <div className="space-y-2">
+          <h1 className="font-display text-3xl font-semibold leading-tight text-foreground sm:text-[32px]">
+            Политика конфиденциальности и Условия использования
+          </h1>
+          <p className="text-[13px] text-muted-foreground">Последнее обновление: 19 февраля 2026 г.</p>
+        </div>
+
         {/* MVP Warning Banner */}
-        <div className="bg-amber-50 border-2 border-amber-300 rounded-2xl p-6 space-y-3">
-          <div className="flex items-center gap-2">
-            <AlertTriangle className="h-6 w-6 text-amber-600" />
-            <h2 className="text-lg font-bold text-amber-800">
+        <div className="space-y-3 rounded-xl border border-warn-border border-l-4 border-l-warn bg-warn-bg p-5 sm:p-6">
+          <div className="flex items-center gap-2.5">
+            <AlertTriangle className="h-5 w-5 shrink-0 text-warn" aria-hidden="true" />
+            <h2 className="font-display text-xl font-semibold text-foreground">
               ДЕМОНСТРАЦИОННЫЙ ПРОТОТИП (MVP)
             </h2>
           </div>
-          <div className="text-sm text-amber-900 space-y-2">
+          <div className="space-y-2 text-[15px] leading-[1.65] text-foreground/85">
             <p>
               <strong>TMS (Therapist Machine Support)</strong> — это демонстрационный прототип
               (Minimum Viable Product), разработанный в учебно-исследовательских целях.
@@ -49,47 +87,32 @@ export default function PolicyPage() {
           </div>
         </div>
 
-        {/* Last updated */}
-        <p className="text-xs text-gray-400">
-          Последнее обновление: 19 февраля 2026 г.
-        </p>
-
         {/* Section 1 */}
-        <section className="space-y-3">
-          <h2 className="text-lg font-bold text-gray-900 flex items-center gap-2">
-            <span className="w-7 h-7 rounded-lg bg-blue-100 flex items-center justify-center text-sm font-bold text-blue-700">1</span>
-            Общие положения
-          </h2>
-          <div className="text-sm text-gray-700 space-y-2 pl-9">
-            <p>
-              <strong>1.1.</strong> Настоящая Политика конфиденциальности описывает порядок сбора,
-              использования и защиты информации при использовании веб-приложения TMS (Therapist Machine
-              Support) (далее — «Сервис»).
-            </p>
-            <p>
-              <strong>1.2.</strong> Используя Сервис, вы (далее — «Пользователь») выражаете своё
-              полное согласие с условиями настоящей Политики. Если вы не согласны, вы обязаны
-              немедленно прекратить использование Сервиса.
-            </p>
-            <p>
-              <strong>1.3.</strong> Сервис является демонстрационным прототипом (MVP), разработанным
-              в учебно-исследовательских целях. Он не прошёл сертификацию как медицинское изделие и
-              не предназначен для использования в клинической практике.
-            </p>
-          </div>
-        </section>
+        <Section title="1. Общие положения">
+          <p>
+            <strong>1.1.</strong> Настоящая Политика конфиденциальности описывает порядок сбора,
+            использования и защиты информации при использовании веб-приложения TMS (Therapist Machine
+            Support) (далее — «Сервис»).
+          </p>
+          <p>
+            <strong>1.2.</strong> Используя Сервис, вы (далее — «Пользователь») выражаете своё
+            полное согласие с условиями настоящей Политики. Если вы не согласны, вы обязаны
+            немедленно прекратить использование Сервиса.
+          </p>
+          <p>
+            <strong>1.3.</strong> Сервис является демонстрационным прототипом (MVP), разработанным
+            в учебно-исследовательских целях. Он не прошёл сертификацию как медицинское изделие и
+            не предназначен для использования в клинической практике.
+          </p>
+        </Section>
 
         {/* Section 2 — Medical Disclaimer */}
-        <section className="space-y-3">
-          <h2 className="text-lg font-bold text-gray-900 flex items-center gap-2">
-            <span className="w-7 h-7 rounded-lg bg-red-100 flex items-center justify-center text-sm font-bold text-red-700">2</span>
-            Медицинский отказ от ответственности (Medical Disclaimer)
-          </h2>
-          <div className="bg-red-50 border border-red-200 rounded-xl p-4 ml-9">
-            <p className="text-sm font-bold text-red-700 mb-3">
+        <Section title="2. Медицинский отказ от ответственности (Medical Disclaimer)">
+          <div className="space-y-3 rounded-xl border border-urgent-border border-l-4 border-l-urgent bg-urgent-bg p-4 sm:p-5">
+            <p className="text-sm font-bold leading-relaxed text-urgent">
               ВНИМАНИЕ: СЕРВИС НЕ ЯВЛЯЕТСЯ МЕДИЦИНСКОЙ ОРГАНИЗАЦИЕЙ, МЕДИЦИНСКИМ ИЗДЕЛИЕМ ИЛИ СРЕДСТВОМ ДИАГНОСТИКИ.
             </p>
-            <div className="text-sm text-gray-700 space-y-2">
+            <div className="space-y-3 text-[15px] leading-[1.65] text-foreground/85">
               <p>
                 <strong>2.1.</strong> Вся информация, предоставляемая Сервисом (диагнозы, оценки рисков,
                 рекомендации по специалистам и лечению), генерируется автоматически с использованием
@@ -121,155 +144,121 @@ export default function PolicyPage() {
               </p>
             </div>
           </div>
-        </section>
+        </Section>
 
         {/* Section 3 — Data */}
-        <section className="space-y-3">
-          <h2 className="text-lg font-bold text-gray-900 flex items-center gap-2">
-            <span className="w-7 h-7 rounded-lg bg-blue-100 flex items-center justify-center text-sm font-bold text-blue-700">3</span>
-            Собираемые данные
-          </h2>
-          <div className="text-sm text-gray-700 space-y-2 pl-9">
-            <p className="font-medium text-gray-900">
-              Мы придерживаемся принципа минимизации данных (Privacy by Design).
-            </p>
-            <p>
-              Мы <strong>НЕ собираем</strong> персональные данные (PII), позволяющие прямо
-              идентифицировать личность (паспортные данные, телефон, Email, адрес).
-            </p>
-            <p>Мы обрабатываем следующие категории данных:</p>
-            <ul className="list-disc pl-5 space-y-1">
-              <li>
-                <strong>3.1.</strong> Имя и город — вводятся Пользователем добровольно. Могут быть
-                вымышленными. Используются для удобства идентификации врачом.
-              </li>
-              <li>
-                <strong>3.2.</strong> Текстовые описания симптомов, введённые Пользователем.
-              </li>
-              <li>
-                <strong>3.3.</strong> Технические данные: IP-адрес, тип устройства, тип браузера —
-                для обеспечения безопасности.
-              </li>
-              <li>
-                <strong>3.4.</strong> Код сопряжения (Pairing Code): уникальный идентификатор
-                (например, LION-45), используемый для связи данных Пациента и Врача.
-              </li>
-              <li>
-                <strong>3.5.</strong> Результаты анализа: предположительные диагнозы, оценки
-                вероятности, AI-обоснования — хранятся в привязке к коду сопряжения.
-              </li>
-            </ul>
-          </div>
-        </section>
+        <Section title="3. Собираемые данные">
+          <p className="font-medium text-foreground">
+            Мы придерживаемся принципа минимизации данных (Privacy by Design).
+          </p>
+          <p>
+            Мы <strong>НЕ собираем</strong> персональные данные (PII), позволяющие прямо
+            идентифицировать личность (паспортные данные, телефон, Email, адрес).
+          </p>
+          <p>Мы обрабатываем следующие категории данных:</p>
+          <ul className="list-disc space-y-1.5 pl-5 marker:text-muted-foreground">
+            <li>
+              <strong>3.1.</strong> Имя и город — вводятся Пользователем добровольно. Могут быть
+              вымышленными. Используются для удобства идентификации врачом.
+            </li>
+            <li>
+              <strong>3.2.</strong> Текстовые описания симптомов, введённые Пользователем.
+            </li>
+            <li>
+              <strong>3.3.</strong> Технические данные: IP-адрес, тип устройства, тип браузера —
+              для обеспечения безопасности.
+            </li>
+            <li>
+              <strong>3.4.</strong> Код сопряжения (Pairing Code): уникальный идентификатор
+              (например, LION-45), используемый для связи данных Пациента и Врача.
+            </li>
+            <li>
+              <strong>3.5.</strong> Результаты анализа: предположительные диагнозы, оценки
+              вероятности, AI-обоснования — хранятся в привязке к коду сопряжения.
+            </li>
+          </ul>
+        </Section>
 
         {/* Section 4 — AI */}
-        <section className="space-y-3">
-          <h2 className="text-lg font-bold text-gray-900 flex items-center gap-2">
-            <Brain className="h-5 w-5 text-purple-600" />
-            <span>4. Использование Искусственного Интеллекта (LLM)</span>
-          </h2>
-          <div className="text-sm text-gray-700 space-y-2 pl-9">
-            <p>
-              <strong>4.1.</strong> Для анализа текстовых симптомов и генерации клинических обоснований
-              Сервис использует API сторонних провайдеров (Groq Inc., США), модель Llama 3.3 70B.
-            </p>
-            <p>
-              <strong>4.2.</strong> Пользователь соглашается с тем, что введённый им текст описания
-              симптомов (без метаданных) будет передан на серверы провайдера ИИ для обработки.
-            </p>
-            <p>
-              <strong>4.3.</strong> Мы <strong>не передаём</strong> провайдеру ИИ никаких данных,
-              позволяющих идентифицировать Пользователя (Code, IP, имя и т.д. не передаются в LLM).
-            </p>
-            <p>
-              <strong>4.4.</strong> Результаты работы AI являются вероятностными и могут содержать
-              ошибки. AI-модель не имеет доступа к медицинской истории, анализам и физикальному
-              обследованию пациента.
-            </p>
-          </div>
-        </section>
+        <Section icon={Brain} title="4. Использование Искусственного Интеллекта (LLM)">
+          <p>
+            <strong>4.1.</strong> Для анализа текстовых симптомов и генерации клинических обоснований
+            Сервис использует API сторонних провайдеров (Groq Inc., США), модель Llama 3.3 70B.
+          </p>
+          <p>
+            <strong>4.2.</strong> Пользователь соглашается с тем, что введённый им текст описания
+            симптомов (без метаданных) будет передан на серверы провайдера ИИ для обработки.
+          </p>
+          <p>
+            <strong>4.3.</strong> Мы <strong>не передаём</strong> провайдеру ИИ никаких данных,
+            позволяющих идентифицировать Пользователя (Code, IP, имя и т.д. не передаются в LLM).
+          </p>
+          <p>
+            <strong>4.4.</strong> Результаты работы AI являются вероятностными и могут содержать
+            ошибки. AI-модель не имеет доступа к медицинской истории, анализам и физикальному
+            обследованию пациента.
+          </p>
+        </Section>
 
         {/* Section 5 — Storage */}
-        <section className="space-y-3">
-          <h2 className="text-lg font-bold text-gray-900 flex items-center gap-2">
-            <Database className="h-5 w-5 text-blue-600" />
-            <span>5. Хранение и передача данных</span>
-          </h2>
-          <div className="text-sm text-gray-700 space-y-2 pl-9">
-            <p>
-              <strong>5.1.</strong> Данные хранятся в базе данных на сервере приложения.
-            </p>
-            <p>
-              <strong>5.2.</strong> Пароли (PIN-коды) хранятся в хешированном виде (PBKDF2-SHA256,
-              120 000 итераций) и не могут быть восстановлены.
-            </p>
-            <p>
-              <strong>5.3.</strong> Доступ к истории симптомов имеет только:
-            </p>
-            <ul className="list-disc pl-5 space-y-1">
-              <li>Сам Пользователь (через браузер, авторизовавшись по коду и PIN).</li>
-              <li>
-                Медицинский специалист, которому Пользователь <strong>добровольно</strong> сообщил
-                свой Код сопряжения.
-              </li>
-            </ul>
-            <p>
-              <strong>5.4.</strong> Мы <strong>не продаём</strong> и не передаём данные третьим лицам
-              в маркетинговых или коммерческих целях.
-            </p>
-          </div>
-        </section>
+        <Section icon={Database} title="5. Хранение и передача данных">
+          <p>
+            <strong>5.1.</strong> Данные хранятся в базе данных на сервере приложения.
+          </p>
+          <p>
+            <strong>5.2.</strong> Пароли (PIN-коды) хранятся в хешированном виде (PBKDF2-SHA256,
+            120 000 итераций) и не могут быть восстановлены.
+          </p>
+          <p>
+            <strong>5.3.</strong> Доступ к истории симптомов имеет только:
+          </p>
+          <ul className="list-disc space-y-1.5 pl-5 marker:text-muted-foreground">
+            <li>Сам Пользователь (через браузер, авторизовавшись по коду и PIN).</li>
+            <li>
+              Медицинский специалист, которому Пользователь <strong>добровольно</strong> сообщил
+              свой Код сопряжения.
+            </li>
+          </ul>
+          <p>
+            <strong>5.4.</strong> Мы <strong>не продаём</strong> и не передаём данные третьим лицам
+            в маркетинговых или коммерческих целях.
+          </p>
+        </Section>
 
         {/* Section 6 — Cookies */}
-        <section className="space-y-3">
-          <h2 className="text-lg font-bold text-gray-900 flex items-center gap-2">
-            <Globe className="h-5 w-5 text-teal-600" />
-            <span>6. Файлы Cookie и Локальное хранилище</span>
-          </h2>
-          <div className="text-sm text-gray-700 space-y-2 pl-9">
-            <p>
-              <strong>6.1.</strong> Сервис использует технологию LocalStorage браузера для хранения
-              вашего Кода сопряжения, идентификатора сессии и истории чата.
-            </p>
-            <p>
-              <strong>6.2.</strong> Удаление кэша/данных браузера может привести к потере доступа к
-              локальной истории чата. Данные в базе данных сервера при этом сохраняются и доступны
-              при повторном входе по коду и PIN.
-            </p>
-          </div>
-        </section>
+        <Section icon={Globe} title="6. Файлы Cookie и Локальное хранилище">
+          <p>
+            <strong>6.1.</strong> Сервис использует технологию LocalStorage браузера для хранения
+            вашего Кода сопряжения, идентификатора сессии и истории чата.
+          </p>
+          <p>
+            <strong>6.2.</strong> Удаление кэша/данных браузера может привести к потере доступа к
+            локальной истории чата. Данные в базе данных сервера при этом сохраняются и доступны
+            при повторном входе по коду и PIN.
+          </p>
+        </Section>
 
         {/* Section 7 — Security */}
-        <section className="space-y-3">
-          <h2 className="text-lg font-bold text-gray-900 flex items-center gap-2">
-            <Lock className="h-5 w-5 text-gray-600" />
-            <span>7. Безопасность</span>
-          </h2>
-          <div className="text-sm text-gray-700 space-y-2 pl-9">
-            <p>
-              <strong>7.1.</strong> Мы используем протокол HTTPS для шифрования данных при передаче.
-            </p>
-            <p>
-              <strong>7.2.</strong> Несмотря на принимаемые меры, абсолютная безопасность передачи
-              информации через Интернет не может быть гарантирована. Пользователь использует Сервис
-              на свой страх и риск.
-            </p>
-            <p>
-              <strong>7.3.</strong> Учитывая демонстрационный характер Сервиса, мы настоятельно
-              рекомендуем <strong>не вводить</strong> реальные персональные данные (настоящее ФИО,
-              реальный адрес и т.д.).
-            </p>
-          </div>
-        </section>
+        <Section icon={Lock} title="7. Безопасность">
+          <p>
+            <strong>7.1.</strong> Мы используем протокол HTTPS для шифрования данных при передаче.
+          </p>
+          <p>
+            <strong>7.2.</strong> Несмотря на принимаемые меры, абсолютная безопасность передачи
+            информации через Интернет не может быть гарантирована. Пользователь использует Сервис
+            на свой страх и риск.
+          </p>
+          <p>
+            <strong>7.3.</strong> Учитывая демонстрационный характер Сервиса, мы настоятельно
+            рекомендуем <strong>не вводить</strong> реальные персональные данные (настоящее ФИО,
+            реальный адрес и т.д.).
+          </p>
+        </Section>
 
         {/* Section 8 — Limitations */}
-        <section className="space-y-3">
-          <h2 className="text-lg font-bold text-gray-900 flex items-center gap-2">
-            <AlertTriangle className="h-5 w-5 text-amber-600" />
-            <span>8. Ограничения MVP-версии</span>
-          </h2>
-          <div className="bg-amber-50/50 border border-amber-100 rounded-xl p-4 ml-9">
-            <div className="text-sm text-gray-700 space-y-2">
+        <Section icon={AlertTriangle} title="8. Ограничения MVP-версии">
+          <div className="space-y-3 rounded-xl border border-warn-border border-l-4 border-l-warn bg-warn-bg p-4 sm:p-5">
+            <div className="space-y-3 text-[15px] leading-[1.65] text-foreground/85">
               <p>
                 <strong>8.1.</strong> Модель ограничена <strong>13 заболеваниями</strong> и <strong>23 симптомами</strong>.
                 Реальный спектр заболеваний многократно шире.
@@ -293,51 +282,39 @@ export default function PolicyPage() {
               </p>
             </div>
           </div>
-        </section>
+        </Section>
 
         {/* Section 9 — Changes */}
-        <section className="space-y-3">
-          <h2 className="text-lg font-bold text-gray-900 flex items-center gap-2">
-            <span className="w-7 h-7 rounded-lg bg-blue-100 flex items-center justify-center text-sm font-bold text-blue-700">9</span>
-            Изменения в Политике
-          </h2>
-          <div className="text-sm text-gray-700 pl-9">
-            <p>
-              <strong>9.1.</strong> Администрация оставляет за собой право вносить изменения
-              в настоящую Политику. Актуальная версия всегда доступна на этой странице.
-            </p>
-          </div>
-        </section>
+        <Section title="9. Изменения в Политике">
+          <p>
+            <strong>9.1.</strong> Администрация оставляет за собой право вносить изменения
+            в настоящую Политику. Актуальная версия всегда доступна на этой странице.
+          </p>
+        </Section>
 
         {/* Section 10 — Contacts */}
-        <section className="space-y-3">
-          <h2 className="text-lg font-bold text-gray-900 flex items-center gap-2">
-            <Mail className="h-5 w-5 text-blue-600" />
-            <span>10. Контакты</span>
-          </h2>
-          <div className="text-sm text-gray-700 pl-9">
-            <p>По вопросам работы Сервиса и приватности: <strong>tms.support@example.com</strong></p>
-          </div>
-        </section>
+        <Section icon={Mail} title="10. Контакты">
+          <p>По вопросам работы Сервиса и приватности: <strong className="text-foreground">tms.support@example.com</strong></p>
+        </Section>
 
-        {/* Bottom banner */}
-        <div className="bg-gray-100 rounded-xl p-4 text-center space-y-2">
-          <p className="text-xs text-gray-500">
+        {/* Bottom note */}
+        <div className="space-y-1 rounded-xl border border-border bg-muted p-4 text-center">
+          <p className="text-[13px] text-muted-foreground">
             TMS (Therapist Machine Support) — демонстрационный прототип (MVP).
           </p>
-          <p className="text-xs text-gray-400">
+          <p className="text-[13px] text-muted-foreground">
             Все диагнозы носят предположительный характер. Не является медицинским изделием.
           </p>
         </div>
 
         {/* Back button */}
-        <div className="text-center pb-4">
-          <Button variant="outline" onClick={() => router.push("/")}>
-            <ArrowLeft className="h-4 w-4 mr-2" />
-            Вернуться на главную
+        <div className="flex justify-center pb-4">
+          <Button variant="outline" size="lg" onClick={() => router.push("/")}>
+            <ArrowLeft />
+            {ps("policyBack", lang)}
           </Button>
         </div>
-      </div>
+      </article>
     </div>
   );
 }

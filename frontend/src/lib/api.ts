@@ -1,4 +1,5 @@
 import axios from "axios";
+import type { Lang } from "./i18n";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
@@ -20,7 +21,31 @@ api.interceptors.request.use((config) => {
 
 // Login/registration failures are shown by the login pages themselves ("wrong password"),
 // so they must not clear storage or redirect.
-const AUTH_FORM_PATHS = ["/login_patient", "/login_doctor", "/regist_as_patient"];
+const AUTH_FORM_PATHS = [
+  "/login_patient",
+  "/login_doctor",
+  "/regist_as_patient",
+  "/register_doctor",
+  "/demo/doctor",
+  "/demo/patient",
+];
+
+// Every key the app keeps in localStorage for a signed-in user
+const SESSION_KEYS = [
+  "access_token",
+  "patient_id",
+  "patient_name",
+  "pairing_code",
+  "patient_is_demo",
+  "doctor_id",
+  "doctor_name",
+  "doctor_specialty",
+  "doctor_is_demo",
+];
+
+function clearSession(): void {
+  SESSION_KEYS.forEach((k) => localStorage.removeItem(k));
+}
 
 // Handle 401 responses — redirect to login
 api.interceptors.response.use(
@@ -29,13 +54,7 @@ api.interceptors.response.use(
     const url: string = error.config?.url ?? "";
     const isAuthForm = AUTH_FORM_PATHS.some((p) => url.includes(p));
     if (error.response?.status === 401 && !isAuthForm && typeof window !== "undefined") {
-      localStorage.removeItem("access_token");
-      localStorage.removeItem("patient_id");
-      localStorage.removeItem("patient_name");
-      localStorage.removeItem("pairing_code");
-      localStorage.removeItem("doctor_id");
-      localStorage.removeItem("doctor_name");
-      localStorage.removeItem("doctor_specialty");
+      clearSession();
       window.location.href = "/";
     }
     return Promise.reject(error);
@@ -60,6 +79,8 @@ export interface DoctorLoginResponse {
   token_type: string;
   doctor: {
     doctor_id: number;
+    username?: string;
+    is_demo?: boolean;
     full_name: string;
     specialty: string;
     created_at: string;
@@ -119,10 +140,22 @@ export interface HistoryEntry {
   doctor_explanation: string | null;
   zone: Zone | null;
   feedback: DiagnosisFeedback | null;
+  complaint?: string | null; // the patient's own words for this day (full intake text)
+  top3?: TopCandidate[]; // the model's top-3 for this day, highest first
+  reasons?: TriageReason[];
+  low_confidence?: boolean;
+}
+
+/** One of the model's top-3 candidates. `name` is the canonical disease name. */
+export interface TopCandidate {
+  name: string;
+  label_ru: string;
+  p: number; // 0..1
 }
 
 export interface Doctor {
   doctor_id: number;
+  username?: string;
   full_name: string;
   specialty: string;
   created_at: string;
@@ -362,6 +395,11 @@ export interface TriagePatient {
   zone: Zone | null; // null = no diary day yet (not assessed)
   last_day_id: number | null;
   feedback_pending: boolean; // latest day has no doctor confirmation yet
+  complaint: string | null; // intake text of the latest day, cut to 160 chars
+  reasons: TriageReason[];
+  low_confidence: boolean;
+  top3: TopCandidate[];
+  is_demo: boolean;
 }
 
 export async function listPatientsTriage(): Promise<{ patients: TriagePatient[] }> {
@@ -604,18 +642,103 @@ export async function uploadLabResult(
 }
 
 export async function getLabResults(
-  _patientId?: number
+  patientId?: number
 ): Promise<{ results: LabResult[] }> {
-  const { data } = await api.post<{ results: LabResult[] }>("/get_lab_results", {});
+  // Patients get their own results; a doctor must name the patient.
+  const body = patientId === undefined ? {} : { patient_id: patientId };
+  const { data } = await api.post<{ results: LabResult[] }>("/get_lab_results", body);
   return data;
 }
 
 export function logout(): void {
-  localStorage.removeItem("access_token");
-  localStorage.removeItem("patient_id");
-  localStorage.removeItem("patient_name");
-  localStorage.removeItem("pairing_code");
-  localStorage.removeItem("doctor_id");
-  localStorage.removeItem("doctor_name");
-  localStorage.removeItem("doctor_specialty");
+  clearSession();
+}
+
+// ---- Doctor accounts and demo mode ----
+
+export interface DoctorProfile {
+  doctor_id: number;
+  username: string;
+  full_name: string;
+  specialty: string;
+  is_demo: boolean;
+  created_at?: string;
+}
+
+export interface DoctorAuthResponse {
+  login: boolean;
+  access_token: string;
+  token_type: string;
+  doctor: DoctorProfile;
+}
+
+async function postDoctorAuth(path: string, body: object): Promise<DoctorAuthResponse> {
+  const { data } = await api.post<DoctorAuthResponse>(path, body);
+  if (data.access_token) {
+    localStorage.setItem("access_token", data.access_token);
+  }
+  return data;
+}
+
+export function loginDoctorByUsername(username: string, password: string): Promise<DoctorAuthResponse> {
+  return postDoctorAuth("/login_doctor", { username, password });
+}
+
+export function registerDoctor(p: {
+  invite_code: string;
+  username: string;
+  full_name: string;
+  specialty: string;
+  password: string;
+}): Promise<DoctorAuthResponse> {
+  return postDoctorAuth("/register_doctor", p);
+}
+
+export async function createDoctorInvite(): Promise<{ code: string; expires_at: string }> {
+  const { data } = await api.post<{ code: string; expires_at: string }>("/doctor/invites", {});
+  return data;
+}
+
+export async function changeDoctorPassword(
+  old_password: string,
+  new_password: string
+): Promise<{ ok: boolean }> {
+  const { data } = await api.post<{ ok: boolean }>("/doctor/change_password", { old_password, new_password });
+  return data;
+}
+
+export async function getDoctorMe(): Promise<DoctorProfile> {
+  const { data } = await api.get<DoctorProfile>("/doctor/me");
+  return data;
+}
+
+/** Never throws: any failure (old backend, offline) means demo is off. */
+export async function getDemoStatus(): Promise<{ enabled: boolean }> {
+  try {
+    const { data } = await api.get<{ enabled?: boolean }>("/demo/status", { timeout: 5000 });
+    return { enabled: data?.enabled === true };
+  } catch {
+    return { enabled: false };
+  }
+}
+
+export function startDemoDoctor(): Promise<DoctorAuthResponse> {
+  return postDoctorAuth("/demo/doctor", {});
+}
+
+export async function startDemoPatient(name?: string, lang?: Lang): Promise<RegisterResponse> {
+  const { data } = await api.post<RegisterResponse>("/demo/patient", {
+    ...(name ? { name } : {}),
+    ...(lang ? { lang } : {}),
+  });
+  if (data.access_token) {
+    localStorage.setItem("access_token", data.access_token);
+  }
+  return data;
+}
+
+/** The `detail` string of an axios error (e.g. "invalid_invite"), or null. */
+export function apiErrorCode(err: unknown): string | null {
+  const detail = (err as { response?: { data?: { detail?: unknown } } })?.response?.data?.detail;
+  return typeof detail === "string" ? detail : null;
 }

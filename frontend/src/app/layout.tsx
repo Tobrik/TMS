@@ -1,10 +1,17 @@
 import type { Metadata } from "next";
-import { Inter } from "next/font/google";
+import { Inter, Literata } from "next/font/google";
 import "./globals.css";
 
 const inter = Inter({
   variable: "--font-inter",
-  subsets: ["latin", "cyrillic"],
+  subsets: ["latin", "cyrillic", "cyrillic-ext"],
+  display: "swap",
+});
+
+const literata = Literata({
+  variable: "--font-literata",
+  subsets: ["latin", "cyrillic", "cyrillic-ext"],
+  display: "swap",
 });
 
 export const metadata: Metadata = {
@@ -21,7 +28,9 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="ru">
-      <body className={`${inter.variable} font-sans antialiased`}>
+      <body
+        className={`${inter.variable} ${literata.variable} font-sans antialiased bg-background text-foreground`}
+      >
         {children}
       </body>
     </html>

@@ -23,16 +23,19 @@ interface SymptomTrendProps {
 
 export function SymptomTrend({ patientId, lang = "ru" }: SymptomTrendProps) {
   const [selectedSymptom, setSelectedSymptom] = useState<string>(SYMPTOM_LIST[0]);
-  const [data, setData] = useState<SymptomGraphEntry[]>([]);
-  const [loading, setLoading] = useState(false);
+  const [loaded, setLoaded] = useState<{ key: string; data: SymptomGraphEntry[] } | null>(null);
+  const key = `${patientId}:${selectedSymptom}`;
+  const loading = loaded?.key !== key;
+  const data = loaded?.key === key ? loaded.data : [];
 
   useEffect(() => {
     if (!patientId || !selectedSymptom) return;
-    setLoading(true);
+    let cancelled = false;
     getSymptomGraph(patientId, selectedSymptom)
-      .then((resp) => setData(resp.symptoms_arr))
-      .catch(() => setData([]))
-      .finally(() => setLoading(false));
+      .then((resp) => resp.symptoms_arr)
+      .catch(() => [] as SymptomGraphEntry[])
+      .then((rows) => { if (!cancelled) setLoaded({ key: `${patientId}:${selectedSymptom}`, data: rows }); });
+    return () => { cancelled = true; };
   }, [patientId, selectedSymptom]);
 
   const chartData = data.map((d) => ({
@@ -49,14 +52,14 @@ export function SymptomTrend({ patientId, lang = "ru" }: SymptomTrendProps) {
   return (
     <div className="space-y-3">
       <div className="flex items-center gap-2">
-        <TrendingUp className="h-5 w-5 text-gray-400" />
-        <h3 className="font-semibold text-gray-900 text-sm">{t("symptomDynamics", lang)}</h3>
+        <TrendingUp className="size-5 text-primary" />
+        <h3 className="font-semibold text-foreground text-[15px]">{t("symptomDynamics", lang)}</h3>
       </div>
 
       <select
         value={selectedSymptom}
         onChange={(e) => setSelectedSymptom(e.target.value)}
-        className="w-full px-3 py-2 rounded-lg border border-gray-200 text-sm bg-white focus:border-indigo-400 focus:ring-1 focus:ring-indigo-400 outline-none"
+        className="h-11 w-full rounded-md border border-input bg-card px-3 text-base text-foreground outline-none transition-[color,box-shadow] focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/60 md:text-sm"
       >
         {SYMPTOM_LIST.map((code) => (
           <option key={code} value={code}>
@@ -66,38 +69,38 @@ export function SymptomTrend({ patientId, lang = "ru" }: SymptomTrendProps) {
       </select>
 
       {loading ? (
-        <div className="h-48 flex items-center justify-center text-sm text-gray-400">
+        <div className="h-48 flex items-center justify-center text-sm text-muted-foreground">
           {t("loadingEllipsis", lang)}
         </div>
       ) : chartData.length === 0 ? (
-        <div className="h-48 flex items-center justify-center text-sm text-gray-400">
+        <div className="h-48 flex items-center justify-center text-sm text-muted-foreground">
           {t("noDataToDisplay", lang)}
         </div>
       ) : (
         <>
           {isWorsening && (
-            <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-red-50 border border-red-200">
-              <AlertTriangle className="h-4 w-4 text-red-500" />
-              <span className="text-sm text-red-700">{t("worseningTrend", lang)}</span>
+            <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-urgent-bg border border-urgent-border">
+              <AlertTriangle className="size-4 text-urgent" />
+              <span className="text-sm text-urgent">{t("worseningTrend", lang)}</span>
             </div>
           )}
 
           <div className="h-48">
             <ResponsiveContainer width="100%" height="100%">
               <LineChart data={chartData}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+                <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
                 <XAxis
                   dataKey="date"
-                  tick={{ fontSize: 11 }}
+                  tick={{ fontSize: 12, fill: "var(--muted-foreground)" }}
                   tickLine={false}
-                  axisLine={{ stroke: "#e5e7eb" }}
+                  axisLine={{ stroke: "var(--border)" }}
                 />
                 <YAxis
                   domain={[0, 3]}
                   ticks={[0, 1, 2, 3]}
-                  tick={{ fontSize: 11 }}
+                  tick={{ fontSize: 12, fill: "var(--muted-foreground)" }}
                   tickLine={false}
-                  axisLine={{ stroke: "#e5e7eb" }}
+                  axisLine={{ stroke: "var(--border)" }}
                   width={30}
                 />
                 <Tooltip
@@ -105,16 +108,16 @@ export function SymptomTrend({ patientId, lang = "ru" }: SymptomTrendProps) {
                   labelFormatter={(label) => `${t("date", lang)}: ${label}`}
                   contentStyle={{
                     borderRadius: "8px",
-                    border: "1px solid #e5e7eb",
+                    border: "1px solid var(--border)",
                     fontSize: "12px",
                   }}
                 />
                 <Line
                   type="monotone"
                   dataKey="value"
-                  stroke="#6366f1"
+                  stroke="var(--chart-1)"
                   strokeWidth={2}
-                  dot={{ fill: "#6366f1", r: 4 }}
+                  dot={{ fill: "var(--chart-1)", r: 4 }}
                   activeDot={{ r: 6 }}
                 />
               </LineChart>

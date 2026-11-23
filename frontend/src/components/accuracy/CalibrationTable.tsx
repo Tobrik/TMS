@@ -8,16 +8,16 @@ export function CalibrationTable({ bins, lang }: { bins: AccuracyCalibrationBin[
   const shown = bins.filter((b) => b.n >= MIN_N);
   return (
     <section className="space-y-3">
-      <h2 className="text-lg font-semibold text-gray-900">{t("accCalibTitle", lang)}</h2>
-      <p className="text-sm text-gray-700">{t("accCalibIntro", lang)}</p>
+      <h2 className="text-lg font-semibold text-foreground sm:text-xl">{t("accCalibTitle", lang)}</h2>
+      <p className="text-sm text-foreground/85">{t("accCalibIntro", lang)}</p>
       {shown.length === 0 ? (
-        <p className="text-sm text-gray-600">{t("accNotAvailable", lang)}</p>
+        <p className="text-sm text-muted-foreground">{t("accNotAvailable", lang)}</p>
       ) : (
         <div className="overflow-x-auto print:overflow-visible">
           <table className="w-full min-w-[20rem] text-left text-sm">
             <caption className="sr-only">{t("accCalibTitle", lang)}</caption>
             <thead>
-              <tr className="border-b border-gray-200 text-gray-700">
+              <tr className="border-b border-border text-foreground/85">
                 <th scope="col" className="py-2 pr-3 font-medium">{t("accCalibBin", lang)}</th>
                 <th scope="col" className="py-2 pr-3 font-medium">{t("accCalibN", lang)}</th>
                 <th scope="col" className="py-2 font-medium">{t("accCalibAcc", lang)}</th>
@@ -25,10 +25,10 @@ export function CalibrationTable({ bins, lang }: { bins: AccuracyCalibrationBin[
             </thead>
             <tbody>
               {shown.map((b) => (
-                <tr key={b.bin} className="border-b border-gray-100">
-                  <th scope="row" className="py-2 pr-3 font-normal tabular-nums text-gray-800">{formatBin(b.bin, lang)}</th>
+                <tr key={b.bin} className="border-b border-border">
+                  <th scope="row" className="py-2 pr-3 font-normal tabular-nums text-foreground/85">{formatBin(b.bin, lang)}</th>
                   <td className="py-2 pr-3 tabular-nums">{b.n}</td>
-                  <td className="py-2 font-semibold tabular-nums text-gray-900">{formatPct(b.accuracy, lang)}</td>
+                  <td className="py-2 font-semibold tabular-nums text-foreground">{formatPct(b.accuracy, lang)}</td>
                 </tr>
               ))}
             </tbody>

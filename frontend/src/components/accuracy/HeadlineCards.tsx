@@ -1,5 +1,6 @@
 import type { AccuracyMetric, AccuracyWritten } from "@/lib/api";
 import { t, type Lang, type TranslationKey } from "@/lib/i18n";
+import { StatTile } from "@/components/brand/StatTile";
 import { formatCi, formatPct, tf } from "./format";
 
 interface HeadlineItem {
@@ -20,24 +21,23 @@ export function HeadlineCards({ written, lang }: { written: AccuracyWritten | nu
 
   return (
     <section className="space-y-4">
-      <h2 className="text-lg font-semibold text-gray-900">{t("accHeadline", lang)}</h2>
-      {!written && <p className="text-sm text-gray-600">{t("accNoWritten", lang)}</p>}
+      <h2 className="text-lg font-semibold text-foreground sm:text-xl">{t("accHeadline", lang)}</h2>
+      {!written && <p className="text-sm text-muted-foreground">{t("accNoWritten", lang)}</p>}
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 print:grid-cols-2">
         {items.map((item) => {
           const ci = formatCi(item.metric, lang);
+          const hint = [ci && tf("accCi", lang, { ci }), tf("accN", lang, { n: item.metric?.n ?? 0 })]
+            .filter(Boolean)
+            .join(" · ");
           return (
-            <article
-              key={item.title}
-              className="flex flex-col rounded-xl border border-gray-200 bg-white p-5 shadow-sm print:break-inside-avoid print:shadow-none"
-            >
-              <h3 className="text-sm font-semibold text-gray-800">{t(item.title, lang)}</h3>
-              <p className="mt-2 text-4xl font-semibold tabular-nums text-gray-900">
-                {formatPct(item.metric?.value ?? null, lang)}
-              </p>
-              {ci && <p className="mt-1 text-sm text-gray-700">{tf("accCi", lang, { ci })}</p>}
-              <p className="text-xs text-gray-600">{tf("accN", lang, { n: item.metric?.n ?? 0 })}</p>
-              <p className="mt-3 text-sm leading-relaxed text-gray-700">{t(item.help, lang)}</p>
-            </article>
+            <div key={item.title} className="flex flex-col gap-2 print:break-inside-avoid">
+              <StatTile
+                label={t(item.title, lang)}
+                value={formatPct(item.metric?.value ?? null, lang)}
+                hint={hint}
+              />
+              <p className="px-1 text-[13px] leading-relaxed text-muted-foreground">{t(item.help, lang)}</p>
+            </div>
           );
         })}
       </div>
