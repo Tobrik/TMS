@@ -1006,7 +1006,7 @@ def get_patient_history(patient_id: int, limit: int = 30) -> List[Dict[str, Any]
         cur.execute("""
             SELECT
                 d.day_id,
-                d.created_at,
+                (d.created_at AT TIME ZONE current_setting('TimeZone')) AS created_at,
                 d.disease_predict,
                 d.score,
                 d.disease_setup,
@@ -1019,9 +1019,12 @@ def get_patient_history(patient_id: int, limit: int = 30) -> List[Dict[str, Any]
                 fb.diagnosis,
                 fb.other_text,
                 fb.zone,
-                fb.created_at
+                fb.created_at,
+                d.analysis_json,
+                i.text
             FROM diary_days d
             LEFT JOIN doctors doc ON doc.doctor_id = d.doctor_id
+            LEFT JOIN intakes i ON i.intake_id = d.intake_id
             LEFT JOIN LATERAL (
                 SELECT f.diagnosis, f.other_text, f.zone, f.created_at
                 FROM diagnosis_feedback f
@@ -1035,22 +1038,61 @@ def get_patient_history(patient_id: int, limit: int = 30) -> List[Dict[str, Any]
         """, (patient_id, limit))
         rows = cur.fetchall()
 
-        return [{
-            "day_id": r[0],
-            "created_at": str(r[1]),
-            "disease_predict": top1_name(decrypt_field(r[2])),
-            "score": r[3],
-            "disease_setup": decrypt_field(r[4]),
-            "recept": decrypt_field(r[5]),
-            "doctor_id": r[6],
-            "doctor_name": decrypt_field(r[7]),
-            "patient_explanation": decrypt_field(r[8]),
-            "doctor_explanation": decrypt_field(r[9]),
-            "zone": r[10],
-            "feedback": _feedback_view(r[11], r[12], r[13], r[14]) if r[11] is not None else None,
-        } for r in rows]
+        result = []
+        for r in rows:
+            analysis = _analysis_of(r[15])
+            result.append({
+                "day_id": r[0],
+                "created_at": _iso(r[1]),
+                "disease_predict": top1_name(decrypt_field(r[2])),
+                "score": r[3],
+                "disease_setup": decrypt_field(r[4]),
+                "recept": decrypt_field(r[5]),
+                "doctor_id": r[6],
+                "doctor_name": decrypt_field(r[7]),
+                "patient_explanation": decrypt_field(r[8]),
+                "doctor_explanation": decrypt_field(r[9]),
+                "zone": r[10],
+                "feedback": _feedback_view(r[11], r[12], r[13], r[14]) if r[11] is not None else None,
+                # The patient's own words and the model's full answer, for the doctor's view.
+                "complaint": decrypt_field(r[16]) if r[16] else None,
+                "top3": _top3_view(analysis),
+                "reasons": analysis.get("reasons") or [],
+                "low_confidence": bool(analysis.get("low_confidence", False)),
+            })
+        return result
     finally:
         conn.close()
+
+
+def _iso(value) -> Optional[str]:
+    """ISO 8601 with seconds and the zone offset ("2026-11-23T12:05:12+05:00"): every browser,
+    Safari included, parses it, and the offset keeps "minutes ago" right in any time zone."""
+    if value is None:
+        return None
+    return value.isoformat(timespec="seconds") if hasattr(value, "isoformat") else str(value)
+
+
+def _analysis_of(raw: Optional[str]) -> Dict[str, Any]:
+    """diary_days.analysis_json decrypted and parsed; {} for v1 rows or unreadable data."""
+    if not raw:
+        return {}
+    try:
+        return json.loads(decrypt_field(raw) or "{}")
+    except (ValueError, TypeError):
+        return {}
+
+
+def _top3_view(analysis: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """analysis_json["top3"] ([[name, p], ...]) as [{"name", "label_ru", "p"}]."""
+    out = []
+    for item in analysis.get("top3") or []:
+        try:
+            name, prob = item[0], float(item[1])
+        except (IndexError, TypeError, ValueError):
+            continue
+        out.append({"name": name, "label_ru": disease_labels.get(name, name), "p": round(prob, 4)})
+    return out
 
 
 def _feedback_view(diagnosis: str, other_text: Optional[str], zone: str, created_at) -> Dict[str, Any]:
@@ -1309,8 +1351,8 @@ def get_all_patients_triage(is_demo: bool = False) -> list:
     try:
         cur = conn.cursor()
         cur.execute("""
-            SELECT p.patient_id, p.full_name, p.city, p.created_at,
-                   d.disease_predict, d.score, d.created_at as diag_date,
+            SELECT p.patient_id, p.full_name, p.city, (p.created_at AT TIME ZONE current_setting('TimeZone')) AS created_at,
+                   d.disease_predict, d.score, (d.created_at AT TIME ZONE current_setting('TimeZone')) AS diag_date,
                    d.day_id, d.zone,
                    EXISTS (SELECT 1 FROM diagnosis_feedback f WHERE f.day_id = d.day_id) AS has_feedback,
                    d.analysis_json, i.text, p.is_demo
@@ -1353,28 +1395,24 @@ def get_all_patients_triage(is_demo: bool = False) -> list:
                 evidences = symptoms_by_day.get(day_id, [])
                 zone = triage.assess({disease: 1.0} if disease else {}, evidences).zone
 
-            analysis = {}
-            if r[10]:
-                try:
-                    analysis = json.loads(decrypt_field(r[10]) or "{}")
-                except (ValueError, TypeError):
-                    analysis = {}
+            analysis = _analysis_of(r[10])
             sort_at = r[6] or r[3]
 
             result.append({
                 "patient_id": r[0],
                 "full_name": decrypt_field(r[1]),
                 "city": decrypt_field(r[2]),
-                "created_at": str(r[3]),
+                "created_at": _iso(r[3]),
                 "last_disease": disease,
                 "last_score": score,
-                "diag_date": str(r[6]) if r[6] else None,
+                "diag_date": _iso(r[6]),
                 "zone": zone,
                 "last_day_id": day_id,
                 "feedback_pending": day_id is not None and not r[9],
                 "complaint": _complaint_preview(decrypt_field(r[11])),
                 "reasons": analysis.get("reasons") or [],
                 "low_confidence": bool(analysis.get("low_confidence", False)),
+                "top3": _top3_view(analysis),
                 "is_demo": bool(r[12]),
                 "_sort": (_ZONE_ORDER.get(zone, 3), -sort_at.timestamp()),
             })

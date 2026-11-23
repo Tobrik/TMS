@@ -329,3 +329,21 @@ def test_real_demo_seed_data_seeds_and_matches_expectations(api, monkeypatch):
         assert row["last_disease"] == last["expect_top1"], case["key"]
     order = [{"red": 0, "yellow": 1, "green": 2}[r["zone"]] for r in rows]
     assert order == sorted(order)
+
+
+def test_queue_and_history_carry_top3_and_the_full_complaint(demo):
+    """The doctor's view needs the model's whole top-3 and the patient's own words per day."""
+    client, _ = demo
+    hdr = _bearer(demo_doctor(client)["access_token"])
+    rows = queue(client, hdr)
+    for row in rows:
+        assert 1 <= len(row["top3"]) <= 3
+        first = row["top3"][0]
+        assert set(first) == {"name", "label_ru", "p"} and 0 < first["p"] <= 1
+        assert [t["p"] for t in row["top3"]] == sorted((t["p"] for t in row["top3"]), reverse=True)
+    yellow_old = rows[2]
+    history = client.post("/get_history", json={"patient_id": yellow_old["patient_id"]}, headers=hdr).json()["history"]
+    latest = history[0]
+    assert latest["complaint"].startswith("Кашляю уже неделю") and not latest["complaint"].endswith("…")
+    assert latest["top3"] and latest["top3"][0]["name"] == yellow_old["top3"][0]["name"]
+    assert isinstance(latest["reasons"], list) and latest["low_confidence"] in (True, False)
